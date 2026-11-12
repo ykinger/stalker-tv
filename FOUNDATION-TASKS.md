@@ -13,7 +13,7 @@ Parent: FND-001 in [STORIES.md](STORIES.md). All tasks are P0 for the first demo
 | 05 — Posters/details | Implemented; device check pending | Lazy poster grids, original vectors, placeholders, series details |
 | 06 — Channels/EPG | Implemented; device check pending | Channel groups and local-time programme listings in channel details |
 | 07 — Sample playback | Implemented; device check pending | Media3 PlayerView; bundled credited 15-second video excerpt |
-| 08 — Verification/handoff | In progress | Build, lint, and connected-test evidence are recorded in the report |
+| 08 — Verification/handoff | Pending runtime access | Build/lint/unit tests pass; emulator ADB unavailable; four UI tests compile but have not run |
 
 These statuses do not close FND-001 until the required demonstration is verified.
 

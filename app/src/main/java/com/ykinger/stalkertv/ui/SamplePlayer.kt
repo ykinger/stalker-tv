@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
+import com.ykinger.stalkertv.R
 import com.ykinger.stalkertv.core.PlaybackSource
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -83,6 +84,7 @@ fun SamplePlayer(source: PlaybackSource, onBack: () -> Unit) {
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 factory = { viewContext ->
                     PlayerView(viewContext).apply {
+                        id = R.id.sample_player
                         layoutParams =
                             ViewGroup.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,

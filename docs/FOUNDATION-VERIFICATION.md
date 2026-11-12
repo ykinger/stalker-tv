@@ -1,8 +1,10 @@
 # Mock foundation verification
 
-Date: 2026-11-12. Scope: FND-001; no real portal testing.
+Date: 2026-11-12. Scope: FND-001; no real portal testing. Implementation starts at commit `d9f108d`; subsequent commits add playback verification coverage and this report.
 
 ## Build and automated checks
+
+Verified through the checked-in wrapper: `./gradlew :core:test :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug`. The wrapper downloaded and checksum-verified Gradle 8.13 successfully.
 
 - Core repository unit tests: **6 passed** (no failures or skipped tests).
 - Debug APK: passed, including the bundled-media build (13 MB debug APK).
@@ -13,9 +15,11 @@ Date: 2026-11-12. Scope: FND-001; no real portal testing.
 
 ## Runtime verification
 
-Android TV API 30 x86 emulator, 960×540 at 160 dpi, using software CPU/GPU emulation because `/dev/kvm` is unavailable. Emulator startup and connected UI checks are in progress. No physical Android box has been tested.
+Android TV API 30 x86 emulator, 960×540 at 160 dpi, using software CPU/GPU emulation because `/dev/kvm` is unavailable. The emulator completed its first boot, but an ADB connection could not be established. Its logs showed the debugging service stopped; attempts with the emulator shell/debug options did not yield a usable connection. The SDK tools also attempted to create their default configuration under a read-only home directory; SDK/build state was redirected to workspace directories. The software emulator was stopped after this attempt. No APK installation or connected test execution is claimed, and no physical Android box has been tested.
 
-Connected test coverage is defined in `MockNavigationTest`: D-pad/sidebar/Back behaviour, movie-details return, and failure-scenario recovery. A compiled test is not a passing runtime test.
+**FND-001 remains open pending runtime verification on a working TV emulator or device.**
+
+Four compiled connected tests are defined in `MockNavigationTest`: D-pad/sidebar/Back behaviour, movie-details return, failure-scenario recovery, and real Media3 sample playback/view cleanup. A compiled test is not a passing runtime test.
 
 ## Manual checks to reproduce
 
