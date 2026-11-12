@@ -6,5 +6,6 @@ The interface uses a left vertical navigation menu and a right content area with
 
 - [Product plan](PRODUCT.md)
 - [User stories](STORIES.md)
+- [Portal compatibility tasks (PROV-001)](PROV-001-TASKS.md)
 
 Status: planning. No application code yet.

@@ -13,6 +13,8 @@ As a viewer, I can connect to a supported Stalker/Ministra portal so I can acces
 - Channels load and at least one supported live stream plays on a physical target box.
 - Available movies, series, and EPG are checked and portal limitations documented without secrets.
 
+Implementation breakdown: [PROV-001 tasks](PROV-001-TASKS.md).
+
 ### PROV-002 — Set up my provider
 **Priority:** P1 | **Dependencies:** PROV-001
 
