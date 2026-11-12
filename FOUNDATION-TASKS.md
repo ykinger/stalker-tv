@@ -1,0 +1,82 @@
+# Mock-first foundation tasks
+
+Parent: FND-001 in [STORIES.md](STORIES.md). All tasks are Backlog and P0 for the first demonstration. No portal credentials or real Stalker connection are required.
+
+## FND-001-01 — Create the Android TV app skeleton
+
+Dependencies: none.
+
+- Set up Kotlin, Compose for TV, and a reproducible Gradle build with pinned versions.
+- Choose and record the initial minimum Android version.
+- Launch a debug APK from an Android TV emulator's launcher.
+- Provide routes for Home, Live TV, Movies, Series, Favourites, Search, Settings, details, and playback.
+
+## FND-001-02 — Define common models and the provider interface
+
+Dependencies: 01.
+
+- Define channels, categories, movies, series, seasons, episodes, programmes, and playback sources with stable IDs.
+- Define asynchronous catalogue, detail, EPG, and stream-resolution operations with loading, empty, unsupported, and error outcomes.
+- Keep provider-specific authentication and response types out of UI code.
+- Allow provider replacement through dependency injection without changing screen implementations.
+
+## FND-001-03 — Implement deterministic mock data
+
+Dependencies: 02.
+
+- Supply enough channels, categories, movies, and series to exercise grid scrolling and multiple seasons/episodes.
+- Include local or appropriately licensed artwork, title placeholders, and missing metadata cases.
+- Supply EPG relative to an injectable clock so current/next programmes remain meaningful.
+- Provide selectable success, delayed, empty, unsupported, and failure scenarios.
+- Mock mode opens directly without portal setup or credentials and makes no portal requests.
+
+## FND-001-04 — Build the sidebar and remote focus behaviour
+
+Dependencies: 01, 03. Implements TVUI-001.
+
+- Display the agreed left vertical menu and selected section's content on the right.
+- Up/Down selects menu items; Right enters content; Back returns predictably.
+- Focus and selection are visibly distinct, with no focus traps.
+- Verify with emulator D-pad input; record physical-device verification separately when available.
+
+## FND-001-05 — Build posters and content details
+
+Dependencies: 03, 04. Implements TVUI-002 and the mock browsing portions of MOV-001 and SER-001.
+
+- Movies and series show poster grids; channels show logos and names.
+- OK opens the selected title; series details expose seasons and episodes.
+- Focused items stay visible and restore their position after returning from details.
+- Missing artwork and metadata remain readable.
+
+## FND-001-06 — Build mock Live TV and EPG screens
+
+Dependencies: 03, 04.
+
+- Display channel groups and remote-navigable current/next programme data in device-local time.
+- A channel selection enters the shared playback route.
+- Missing EPG leaves channels accessible.
+- Label this as mock browsing evidence, not live portal compatibility.
+
+## FND-001-07 — Add sample playback
+
+Dependencies: 02, 03, 05, 06. Implements the initial portion of PLAY-001.
+
+- Resolve mock selections to a bundled or authorized sample video using the provider interface.
+- Media3 renders audio/video; play/pause and Back work by remote.
+- Leaving playback releases resources; changing selections does not overlap audio.
+- Document sample source/licence and network requirements; remote sample playback does not require a portal.
+- Identify sample media clearly so mock catalogue entries do not imply matching real content.
+
+## FND-001-08 — Verify the mock demonstration and handoff
+
+Dependencies: 04–07. Implements TVUI-003 in the demonstrated screens.
+
+- Verify sidebar → grid → details → sample playback → Back using a remote/D-pad.
+- Exercise loading, empty, missing-artwork, unsupported, and retryable error scenarios.
+- Record emulator/device, Android version, build commit, outcomes, and remaining gaps.
+- Document mock mode as the development default and how to reproduce each scenario.
+- Keep real authentication and Stalker compatibility unverified until PROV-001 passes.
+
+## Completion and next phase
+
+FND-001 closes after the mock demonstration passes. Other linked stories close only when all their own acceptance criteria are met. Next, implement the real Stalker adapter through [PROV-001 tasks](PROV-001-TASKS.md), reusing this app, interface, and player.

@@ -2,10 +2,26 @@
 
 Status: all stories are **Backlog**. P0 establishes feasibility; P1 is required for MVP. IDs remain stable when moved to an issue tracker. Dependencies refer to story IDs. These are high-level stories to split into implementation tasks during development.
 
+## Mock-first foundation
+
+### FND-001 — Explore the app with mock content
+**Priority:** P0 | **Dependencies:** none; no portal access required
+
+As a viewer, I can navigate a working TV prototype with sample content before connecting a provider.
+
+- The app launches with a mock provider behind a shared provider interface.
+- Sidebar, poster grids, title details, channel/EPG screens, and sample playback work with a remote.
+- Fixtures cover movies, series/seasons/episodes, channels, and programmes, including missing metadata and failure states.
+- Sample media uses bundled or authorized content and requires no Stalker credentials.
+- The real provider can later replace the mock implementation without rewriting UI screens.
+- Mock evidence is recorded separately from real portal compatibility evidence.
+
+Implementation breakdown: [Mock-first foundation tasks](FOUNDATION-TASKS.md).
+
 ## Provider connection
 
 ### PROV-001 — Validate portal compatibility
-**Priority:** P0 | **Dependencies:** authorized test access
+**Priority:** P0 for the real integration phase | **Dependencies:** FND-001, authorized test access
 
 As a viewer, I can connect to a supported Stalker/Ministra portal so I can access my subscription.
 
@@ -108,7 +124,7 @@ As a viewer, I can browse series, seasons, and episodes so I can watch a show.
 ## Playback
 
 ### PLAY-001 — Control playback
-**Priority:** P0 for feasibility; P1 for full controls | **Dependencies:** PROV-001 for integration
+**Priority:** P0 for sample playback; P1 for full controls | **Dependencies:** shared interface and sample data for initial playback; PROV-001 for real Stalker integration
 
 As a viewer, I can watch supported streams and control playback using my remote.
 

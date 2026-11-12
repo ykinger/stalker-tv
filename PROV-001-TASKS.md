@@ -2,14 +2,14 @@
 
 Parent: [PROV-001 in STORIES.md](STORIES.md#prov-001--validate-portal-compatibility)
 
-All tasks are **Backlog**, priority **P0**. This is a feasibility prototype: a basic connection screen, channel list, and player. Polished setup, persistent provider management, full playback controls, and poster browsing remain in their respective MVP stories.
+All tasks are **Backlog**, priority **P0 for the real integration phase**. Start with [FND-001 mock-first foundation](FOUNDATION-TASKS.md). This phase replaces mock data with a real Stalker adapter in the existing app. Polished provider management and full playback controls remain in their respective MVP stories.
 
 ## Task overview
 
 | ID | Task | Depends on |
 | --- | --- | --- |
-| PROV-001-01 | Establish test portal and device requirements | None |
-| PROV-001-02 | Create the Android TV prototype skeleton | None |
+| PROV-001-01 | Establish test portal and device requirements | FND-001 |
+| PROV-001-02 | Prepare the existing app for real-provider testing | FND-001 |
 | PROV-001-03 | Implement portal requests and safe diagnostics | 01, 02 |
 | PROV-001-04 | Implement handshake and authenticated profile access | 03 |
 | PROV-001-05 | Fetch channel groups and channels | 04 |
@@ -19,7 +19,7 @@ All tasks are **Backlog**, priority **P0**. This is a feasibility prototype: a b
 | PROV-001-09 | Verify session expiry and failure handling | 04, 06, 07 |
 | PROV-001-10 | Record compatibility results and handoff | 07, 08, 09 |
 
-Dependencies use the final two digits of the IDs above. Mock development can proceed before test access is ready; live compatibility cannot be signed off without it.
+Dependencies use the final two digits of the IDs above. FND-001 is the completed mock-first demonstration. Real portal access is required only in this integration phase.
 
 ## PROV-001-01 — Establish test portal and device requirements
 
@@ -31,18 +31,18 @@ Acceptance criteria:
 - Test access details are supplied privately and are absent from repository files and issue descriptions.
 - The target physical box, Android version, remote, and network conditions are recorded.
 - Expected access to live TV, movies, series, and EPG is listed, including unknowns.
-- An initial minimum Android version is chosen for the prototype and recorded with its rationale.
+- The Android version and device choices from FND-001 are confirmed for real-provider testing.
 
-## PROV-001-02 — Create the Android TV prototype skeleton
+## PROV-001-02 — Prepare the existing app for real-provider testing
 
-Set up the smallest runnable native TV application to exercise the integration.
+Reuse the skeleton, common models, provider interface, and player delivered by FND-001. Keep this task ID stable; its scope now covers integration wiring rather than creating the app.
 
 Acceptance criteria:
 
-- Kotlin project builds using a documented command and pinned tool versions.
-- A debug APK installs and launches from the Android TV launcher.
-- Basic connection, channel-list, and player destinations are reachable with a remote.
-- Provider code and stream playback sit behind separate interfaces so sample data can be used independently.
+- A development-only provider selector can choose mock or real Stalker adapters; mock remains the development default.
+- Real connection details can be entered privately without committing them.
+- Existing channel-list and player screens consume the shared interface without Stalker response types.
+- Mock mode continues to work without portal access.
 - No production credentials or signing keys are included in the project.
 
 ## PROV-001-03 — Implement portal requests and safe diagnostics
@@ -149,4 +149,4 @@ Acceptance criteria:
 
 ## Recommended start
 
-Start with 01 and 02. Then complete 03–07 for the first connection-to-playback demonstration. Probe capabilities in 08 after catalogue access works, validate recovery in 09, and finish with the report in 10.
+Complete FND-001 first. Then start 01 and 02, followed by 03–07 for real portal playback. Probe capabilities in 08, validate recovery in 09, and finish with the report in 10. Existing UI and sample playback are reused throughout.

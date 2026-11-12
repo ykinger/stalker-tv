@@ -27,12 +27,15 @@ Kotlin, Jetpack Compose for TV, Media3/ExoPlayer, OkHttp, Kotlin serialization, 
 
 ## Delivery order
 
-1. Prove portal authentication, catalogue retrieval, and playback on a physical Android TV box.
-2. Build the sidebar, poster grid, remote navigation, and reusable player with sample content.
-3. Integrate live TV and EPG.
-4. Integrate movies and series.
-5. Add home discovery, favourites, resume, and search.
-6. Validate device compatibility, recovery, and signed APK delivery.
+1. Build the Android TV skeleton, common provider interface, and deterministic mock provider without portal access.
+2. Build the sidebar, poster grids, details, channel/EPG screens, remote navigation, and sample playback using mocks.
+3. Verify the mock demonstration, including loading, empty, and error scenarios.
+4. Implement the real Stalker adapter and prove authentication, catalogue retrieval, and playback on a physical Android TV box.
+5. Integrate real live TV, EPG, movies, and series into the existing screens.
+6. Complete home discovery, favourites, resume, search, and provider settings.
+7. Validate device compatibility, recovery, and signed APK delivery.
+
+Mock mode is the initial development default. Sample playback uses bundled or authorized sample media. Mock results do not establish Stalker compatibility; real portal validation remains a release prerequisite.
 
 ## Deferred
 
