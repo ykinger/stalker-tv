@@ -1,6 +1,6 @@
 # User stories
 
-Status: all stories are **Backlog**. P0 establishes feasibility; P1 is required for MVP. IDs remain stable when moved to an issue tracker. Dependencies refer to story IDs. These are high-level stories to split into implementation tasks during development.
+Status: **FND-001 is In progress**; other stories remain **Backlog**. P0 establishes feasibility; P1 is required for MVP. IDs remain stable when moved to an issue tracker. Dependencies refer to story IDs. These are high-level stories to split into implementation tasks during development.
 
 ## Mock-first foundation
 

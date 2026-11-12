@@ -1,6 +1,21 @@
 # Mock-first foundation tasks
 
-Parent: FND-001 in [STORIES.md](STORIES.md). All tasks are Backlog and P0 for the first demonstration. No portal credentials or real Stalker connection are required.
+Parent: FND-001 in [STORIES.md](STORIES.md). All tasks are P0 for the first demonstration. Implementation is in progress; see the status table and [verification report](docs/FOUNDATION-VERIFICATION.md). No portal credentials or real Stalker connection are required.
+
+## Implementation status
+
+| Task | Status | Evidence / remaining work |
+| --- | --- | --- |
+| 01 — App skeleton | Implemented; device check pending | Gradle project, TV manifest, navigation routes; debug APK builds |
+| 02 — Models/interface | Implemented | Provider-neutral Kotlin module and repository contract |
+| 03 — Mock data | Implemented | Catalogue, series hierarchy, injected-clock EPG, scenario fixtures; six unit tests pass |
+| 04 — Sidebar/focus | Implemented; device check pending | Compose for TV drawer and standard focus APIs |
+| 05 — Posters/details | Implemented; device check pending | Lazy poster grids, original vectors, placeholders, series details |
+| 06 — Channels/EPG | Implemented; device check pending | Channel groups and local-time programme listings in channel details |
+| 07 — Sample playback | Implemented; device check pending | Media3 PlayerView; bundled credited 15-second video excerpt |
+| 08 — Verification/handoff | In progress | Build, lint, and connected-test evidence are recorded in the report |
+
+These statuses do not close FND-001 until the required demonstration is verified.
 
 ## FND-001-01 — Create the Android TV app skeleton
 
