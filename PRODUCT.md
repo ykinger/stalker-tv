@@ -1,0 +1,51 @@
+# Product plan
+
+## Vision
+
+Let viewers browse and play their own provider's live TV, movies, and series on an Android TV box using a remote-friendly interface.
+
+## Audience and content
+
+Users supply their own authorized Stalker/Ministra portal access. The app does not supply channels or subscriptions. Portal capabilities vary; missing content types and metadata must be handled gracefully.
+
+## Experience
+
+- Left vertical menu: Home, Live TV, Movies, Series, Favourites, Search, Settings.
+- Right content area: poster grids for movies and series; channel logos and a programme guide for live TV.
+- Clear remote focus, readable text, dark background, and artwork fallbacks.
+- Familiar TV navigation with original branding, styling, and assets.
+
+## MVP
+
+One active provider; connection setup and validation; live channels and available EPG; movie and series browsing; search; playback controls; subtitles and audio selection where available; favourites; continue watching; provider management and refresh.
+
+All functionality must work with directional buttons, OK, and Back. Watch history and provider settings stay on the device. A backend and app account are not required initially.
+
+## Technical direction
+
+Kotlin, Jetpack Compose for TV, Media3/ExoPlayer, OkHttp, Kotlin serialization, Room, and DataStore. Keep portal integration behind a provider interface with common content models. Resolve streams at playback time and support session renewal. Protect sensitive stored values using Android Keystore-backed encryption and redact logs and backups.
+
+## Delivery order
+
+1. Prove portal authentication, catalogue retrieval, and playback on a physical Android TV box.
+2. Build the sidebar, poster grid, remote navigation, and reusable player with sample content.
+3. Integrate live TV and EPG.
+4. Integrate movies and series.
+5. Add home discovery, favourites, resume, and search.
+6. Validate device compatibility, recovery, and signed APK delivery.
+
+## Deferred
+
+Multiple active providers, Xtream Codes, M3U, recording, catch-up, timeshift, cloud sync, billing, and recommendations. DRM integration depends on provider requirements and is not assumed for the MVP.
+
+## Open decisions
+
+- Final app name and visual identity.
+- Authorized test portal and supported portal variants.
+- Minimum Android version and physical device test matrix.
+- Supported stream codecs and DRM requirements.
+- Direct APK versus Google Play distribution.
+
+## Release gate
+
+The MVP must connect to the agreed test portals, play supported live and on-demand streams on the target devices, support all primary flows with a remote, preserve local favourites and progress, and recover clearly from network and session failures. Compatibility claims cover tested portal/device combinations only.
