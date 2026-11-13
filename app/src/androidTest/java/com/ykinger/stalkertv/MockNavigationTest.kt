@@ -45,6 +45,8 @@ class MockNavigationTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.onNodeWithText("Play sample").assertExists()
         compose.runOnIdle { assertNull(playerView?.player) }
+    }
+
     @Test
     fun sidebarSupportsDpadAndBack() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
