@@ -2,6 +2,7 @@ package com.ykinger.stalkertv
 
 import android.view.KeyEvent
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
@@ -9,12 +10,18 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertNull
 import org.junit.Rule
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class MockNavigationTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+
+    @Before
+    fun openOfflineDemo() {
+        compose.onNodeWithText("Open offline demo").performSemanticsAction(SemanticsActions.OnClick) { it() }
+    }
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     @Test
@@ -38,8 +45,6 @@ class MockNavigationTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.onNodeWithText("Play sample").assertExists()
         compose.runOnIdle { assertNull(playerView?.player) }
-    }
-
     @Test
     fun sidebarSupportsDpadAndBack() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()

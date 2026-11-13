@@ -1,8 +1,8 @@
 # PROV-001 — Portal compatibility tasks
 
-Parent: [PROV-001 in STORIES.md](STORIES.md#prov-001--validate-portal-compatibility)
+Parent: [PROV-001 in STORIES.md](../../stories/STORIES.md#prov-001--validate-portal-compatibility)
 
-All tasks are **Backlog**, priority **P0 for the real integration phase**. Start with [FND-001 mock-first foundation](FOUNDATION-TASKS.md). This phase replaces mock data with a real Stalker adapter in the existing app. Polished provider management and full playback controls remain in their respective MVP stories.
+All tasks are **Backlog**, priority **P0 for the real integration phase**. Start with [FND-001 mock-first foundation](../foundation/FND-001.md). Physical-device and real-provider validation is scheduled near release; see the [roadmap](../../ROADMAP.md).
 
 ## Task overview
 

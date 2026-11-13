@@ -62,13 +62,13 @@ private enum class Section(val label: String, val icon: ImageVector) {
 }
 
 @Composable
-fun TvApp(container: AppContainer) {
+fun TvApp(container: AppContainer, demo: Boolean = true, onProfileSettings: () -> Unit = {}) {
     val model: CatalogueViewModel =
-        viewModel(factory = viewModelFactory { initializer { CatalogueViewModel(container) } })
+        viewModel(key = "catalogue-${System.identityHashCode(container)}", factory = viewModelFactory { initializer { CatalogueViewModel(container) } })
     val scenario by model.scenario.collectAsStateWithLifecycle()
     val nav = rememberNavController()
     NavHost(navController = nav, startDestination = "browse") {
-        composable("browse") { BrowseScreen(model) { id -> nav.navigate("details/$id") } }
+        composable("browse") { BrowseScreen(model, demo, onProfileSettings) { id -> nav.navigate("details/${android.net.Uri.encode(id)}") } }
         composable("details/{id}") { entry ->
             val id = requireNotNull(entry.arguments?.getString("id"))
             val detail: DetailViewModel =
@@ -77,7 +77,7 @@ fun TvApp(container: AppContainer) {
                     factory =
                         viewModelFactory { initializer { DetailViewModel(id, model.repository) } },
                 )
-            DetailScreen(detail, { nav.popBackStack() }, { nav.navigate("player/$it") })
+            DetailScreen(detail, { nav.popBackStack() }, { nav.navigate("player/${android.net.Uri.encode(it)}") }, demo)
         }
         composable("player/{id}") { entry ->
             val id = requireNotNull(entry.arguments?.getString("id"))
@@ -88,13 +88,13 @@ fun TvApp(container: AppContainer) {
                         viewModelFactory { initializer { PlaybackViewModel(id, model.repository) } },
                 )
             val state by playback.state.collectAsStateWithLifecycle()
-            StateContent(state, playback::refresh) { SamplePlayer(it) { nav.popBackStack() } }
+            StateContent(state, playback::refresh) { SamplePlayer(it, demo = demo) { nav.popBackStack() } }
         }
     }
 }
 
 @Composable
-private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
+private fun BrowseScreen(model: CatalogueViewModel, demo: Boolean, onProfileSettings: () -> Unit, onOpen: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     val scenario by model.scenario.collectAsStateWithLifecycle()
     var section by rememberSaveable { mutableStateOf(Section.HOME) }
@@ -111,7 +111,8 @@ private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
         drawerContent = {
             Column(
                 Modifier.width(158.dp)
-                    .fillMaxHeight()
+                     .fillMaxHeight()
+                     .verticalScroll(rememberScrollState())
                     .focusRequester(menuFocus)
                     .onFocusChanged { menuFocused = it.hasFocus }
                     .focusGroup(),
@@ -124,7 +125,7 @@ private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
                     modifier = Modifier.padding(12.dp),
                 )
                 Text(
-                    "MOCK PREVIEW",
+                    if (demo) "MOCK PREVIEW" else "STALKER PROFILE",
                     color = MaterialTheme.colorScheme.primary,
                     fontSize = 10.sp,
                     modifier = Modifier.padding(start = 12.dp, bottom = 18.dp),
@@ -154,7 +155,7 @@ private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
                         Text(item.label)
                     }
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     "Your content. Your space.",
                     fontSize = 10.sp,
@@ -178,19 +179,22 @@ private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    "DEMO / ${scenario.name}",
+                    if (demo) "DEMO / ${scenario.name}" else "CONNECTED",
                     color = MaterialTheme.colorScheme.primary,
                     fontSize = 11.sp,
                 )
             }
             Text(
-                if (section == Section.LIVE) "Sample channels • programme times are local"
+                if (section == Section.LIVE) { if (demo) "Sample channels • programme times are local" else "Provider channels • programme times are local" }
                 else "A preview of your next watch",
                 color = Color(0xFF95A4B8),
                 modifier = Modifier.padding(top = 4.dp, bottom = 18.dp),
             )
             when (section) {
-                Section.SETTINGS -> Settings(scenario, model::setScenario)
+                Section.SETTINGS -> if (demo) Settings(scenario, model::setScenario) else Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Button(onClick = onProfileSettings) { Text("Manage profiles") }
+                    Button(onClick = model::refresh) { Text("Refresh channels") }
+                }
                 Section.FAVOURITES ->
                     MessagePanel(
                         "Your favourites will appear here. Saving favourites is planned for LIB-001."
@@ -203,6 +207,7 @@ private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
                             CatalogueContent(
                                 section,
                                 catalogue,
+                                demo,
                                 restoreTitleId,
                                 { restoreTitleId = null },
                             ) { id ->
@@ -220,6 +225,7 @@ private fun BrowseScreen(model: CatalogueViewModel, onOpen: (String) -> Unit) {
 private fun CatalogueContent(
     section: Section,
     catalogue: Catalogue,
+    demo: Boolean,
     restoreTitleId: String?,
     onRestored: () -> Unit,
     onOpen: (String) -> Unit,
@@ -266,7 +272,7 @@ private fun CatalogueContent(
                         Section.LIVE -> title.kind == ContentKind.CHANNEL
                         Section.MOVIES -> title.kind == ContentKind.MOVIE
                         Section.SERIES -> title.kind == ContentKind.SERIES
-                        Section.HOME -> title.kind != ContentKind.CHANNEL
+                         Section.HOME -> !demo || title.kind != ContentKind.CHANNEL
                         else -> true
                     }
                 kindMatches &&
@@ -274,7 +280,7 @@ private fun CatalogueContent(
                     title.name.contains(query, ignoreCase = true)
             }
         if (titles.isEmpty()) {
-            MessagePanel("No titles match your selection.") {
+            MessagePanel(if (!demo && section in listOf(Section.MOVIES, Section.SERIES)) "No ${section.label.lowercase()} available from this connection yet." else "No titles match your selection.") {
                 query = ""
                 category = null
             }
@@ -410,7 +416,7 @@ private fun MessagePanel(message: String, action: String = "Browse movies", onAc
 }
 
 @Composable
-private fun DetailScreen(model: DetailViewModel, onBack: () -> Unit, onPlay: (String) -> Unit) {
+private fun DetailScreen(model: DetailViewModel, onBack: () -> Unit, onPlay: (String) -> Unit, demo: Boolean = true) {
     val state by model.state.collectAsStateWithLifecycle()
     val firstFocus = remember { FocusRequester() }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(36.dp)) {
@@ -436,7 +442,7 @@ private fun DetailScreen(model: DetailViewModel, onBack: () -> Unit, onPlay: (St
                     }
                     item {
                         Text(
-                            "MOCK CONTENT • Playback uses Big Buck Bunny sample media",
+                            if (demo) "MOCK CONTENT • Playback uses Big Buck Bunny sample media" else "Provider content",
                             color = MaterialTheme.colorScheme.primary,
                             fontSize = 12.sp,
                         )
@@ -458,7 +464,7 @@ private fun DetailScreen(model: DetailViewModel, onBack: () -> Unit, onPlay: (St
                         if (detail.seasons.isEmpty()) item { Text("No episodes available.") }
                     } else {
                         item {
-                            Button(onClick = { onPlay(detail.title.id) }) { Text("Play sample") }
+                            Button(onClick = { onPlay(detail.title.id) }) { Text(if (demo) "Play sample" else "Watch channel") }
                         }
                     }
                     if (detail.title.kind == ContentKind.CHANNEL) {
@@ -468,7 +474,7 @@ private fun DetailScreen(model: DetailViewModel, onBack: () -> Unit, onPlay: (St
                         if (detail.programmes.isEmpty())
                             item {
                                 Text(
-                                    "No guide data available. You can still play this channel's sample."
+                                    if (demo) "No guide data available. You can still play this channel's sample." else "No guide data available. You can still watch this channel."
                                 )
                             }
                         items(detail.programmes, key = { it.id }) { programme ->

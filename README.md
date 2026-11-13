@@ -2,7 +2,14 @@
 
 Native Android TV player for users connecting their own Stalker/Ministra IPTV providers. Product name is provisional.
 
-The initial app runs with **mock data**: a left navigation drawer, poster grids, movie/series details, channel programme listings, search, and sample playback. No portal URL or credentials are required. Real Stalker integration is a later phase.
+The app starts on a landing page. Choose **Add playlist → Stalker Portal** to
+enter a host/IP, registered MAC and optional serial ID, validate the connection,
+and save an encrypted local playlist. For Docker testing use host
+`http://10.0.2.2:8080`, MAC `00:1A:79:00:00:01` (see
+[mock portal](tools/mock-portal/README.md)); serial may be left blank. Saving or selecting a playlist connects
+and opens Home with its channel list. Select a channel to resolve and play its
+stream. Docker serves the same sample MP4 for all five channels, not live TV.
+**Open offline demo** retains the original sample browsing experience.
 
 ## Build and run
 
@@ -46,7 +53,8 @@ See [architecture](docs/ARCHITECTURE.md), [sample credits](docs/ASSETS.md), and 
 
 ## Planning
 
-- [Product plan](PRODUCT.md)
-- [User stories](STORIES.md)
-- [Mock-first foundation tasks](FOUNDATION-TASKS.md)
-- [Real portal compatibility tasks](PROV-001-TASKS.md)
+- [Tracker and roadmap](tracker/README.md)
+- [Product plan](tracker/PRODUCT.md)
+- [User stories](tracker/stories/STORIES.md)
+- [Mock-first foundation tasks](tracker/tasks/foundation/FND-001.md)
+- [Real portal compatibility tasks](tracker/tasks/provider/PROV-001.md)

@@ -1,5 +1,12 @@
 # Product plan
 
+## Next milestone
+
+Start on a landing page. Settings offers Add profile → protocol selection (Stalker
+only initially) → serial ID, host address, and registered MAC. Validate against the
+Docker portal before saving locally. Emulator-first development; physical-box and
+real-provider validation happen near release, not as a prerequisite for this milestone.
+
 ## Vision
 
 Let viewers browse and play their own provider's live TV, movies, and series on an Android TV box using a remote-friendly interface.
@@ -17,7 +24,7 @@ Users supply their own authorized Stalker/Ministra portal access. The app does n
 
 ## MVP
 
-One active provider; connection setup and validation; live channels and available EPG; movie and series browsing; search; playback controls; subtitles and audio selection where available; favourites; continue watching; provider management and refresh.
+Multiple saved connection profiles, with one active provider at a time; connection setup and validation; live channels and available EPG; movie and series browsing; search; playback controls; subtitles and audio selection where available; favourites; continue watching; provider management and refresh.
 
 All functionality must work with directional buttons, OK, and Back. Watch history and provider settings stay on the device. A backend and app account are not required initially.
 

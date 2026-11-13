@@ -26,9 +26,10 @@ import com.ykinger.stalkertv.core.PlaybackSource
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-fun SamplePlayer(source: PlaybackSource, onBack: () -> Unit) {
+fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Unit) {
     val context = LocalContext.current
     var error by remember(source) { mutableStateOf(false) }
+    var playing by remember(source) { mutableStateOf(false) }
     var resumePlayback by remember(source) { mutableStateOf(true) }
     val player =
         remember(context, source) {
@@ -42,6 +43,7 @@ fun SamplePlayer(source: PlaybackSource, onBack: () -> Unit) {
     DisposableEffect(player) {
         val listener =
             object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
                 override fun onPlayerError(playbackError: PlaybackException) {
                     error = true
                 }
@@ -62,12 +64,13 @@ fun SamplePlayer(source: PlaybackSource, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Text(
-            source.label + " • All demo titles use this sample",
+            source.label + if (demo) " • All demo titles use this sample" else "",
             modifier = Modifier.padding(12.dp),
         )
+        if (!demo) Text(if (playing) "Playing" else "Paused or buffering")
         if (error) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Sample playback failed. Retry or return to details.")
+                Text("Playback failed. Retry or go back.")
                 Button(
                     onClick = {
                         error = false
@@ -77,7 +80,7 @@ fun SamplePlayer(source: PlaybackSource, onBack: () -> Unit) {
                 ) {
                     Text("Retry playback")
                 }
-                Button(onClick = onBack) { Text("Back to details") }
+                Button(onClick = onBack) { Text("Back") }
             }
         } else {
             AndroidView(

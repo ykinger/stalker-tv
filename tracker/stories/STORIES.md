@@ -16,7 +16,7 @@ As a viewer, I can navigate a working TV prototype with sample content before co
 - The real provider can later replace the mock implementation without rewriting UI screens.
 - Mock evidence is recorded separately from real portal compatibility evidence.
 
-Implementation breakdown: [Mock-first foundation tasks](FOUNDATION-TASKS.md).
+Implementation breakdown: [Mock-first foundation tasks](../tasks/foundation/FND-001.md).
 
 ## Provider connection
 
@@ -29,7 +29,7 @@ As a viewer, I can connect to a supported Stalker/Ministra portal so I can acces
 - Channels load and at least one supported live stream plays on a physical target box.
 - Available movies, series, and EPG are checked and portal limitations documented without secrets.
 
-Implementation breakdown: [PROV-001 tasks](PROV-001-TASKS.md).
+Implementation breakdown: [PROV-001 tasks](../tasks/provider/PROV-001.md).
 
 ### PROV-002 — Set up my provider
 **Priority:** P1 | **Dependencies:** PROV-001

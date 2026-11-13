@@ -6,9 +6,9 @@ import com.ykinger.stalkertv.core.MockContentRepository
 import com.ykinger.stalkertv.core.MockScenario
 
 // Android's recommended manual dependency injection via an application container.
-class AppContainer {
+class AppContainer(private val connectedRepository: ContentRepository? = null) {
     fun repository(scenario: MockScenario): ContentRepository =
-        MockContentRepository(scenario = scenario)
+        connectedRepository ?: MockContentRepository(scenario = scenario)
 }
 
 class TvApplication : Application() {
