@@ -5,6 +5,7 @@
 
 package com.ykinger.stalkertv.ui
 
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -31,6 +32,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
@@ -50,6 +53,10 @@ import com.ykinger.stalkertv.R
 import com.ykinger.stalkertv.core.*
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.net.HttpURLConnection
+import java.net.URI
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private enum class Section(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
@@ -307,40 +314,29 @@ private fun CatalogueContent(
             modifier = Modifier.fillMaxSize().focusRestorer(),
         ) {
             items(titles, key = { it.id }) { title ->
-                Card(
-                    onClick = { onOpen(title.id) },
-                    modifier = Modifier.fillMaxWidth().focusRequester(cardFocus.getValue(title.id)),
-                    scale = CardDefaults.scale(focusedScale = 1.04f),
-                ) {
-                    Column {
-                        Artwork(
-                            title,
-                            Modifier.fillMaxWidth()
-                                .aspectRatio(if (title.kind == ContentKind.CHANNEL) 2.3f else 0.70f),
-                        )
-                        Column(Modifier.padding(10.dp)) {
-                            Text(
-                                title.name,
-                                maxLines = 2,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                if (title.kind == ContentKind.CHANNEL) "View guide & watch"
-                                else "${title.year ?: ""}  •  ${title.kind.name.lowercase()}",
-                                fontSize = 10.sp,
-                                color = Color(0xFF95A4B8),
-                            )
-                        }
-                    }
-                }
+                PosterCard(title, Modifier.fillMaxWidth().focusRequester(cardFocus.getValue(title.id))) { onOpen(title.id) }
             }
         }
     }
 }
 
 @Composable
-private fun Artwork(title: Title, modifier: Modifier = Modifier) {
+internal fun PosterCard(title: Title, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = modifier, scale = CardDefaults.scale(focusedScale = 1.04f)) {
+        Column {
+            Artwork(title, Modifier.fillMaxWidth().aspectRatio(if (title.kind == ContentKind.CHANNEL) 2.3f else 0.70f))
+            Column(Modifier.padding(10.dp)) {
+                Text(title.name, maxLines = 2, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text(if (title.kind == ContentKind.CHANNEL) "View guide & watch"
+                    else "${title.year ?: ""}  •  ${title.kind.name.lowercase()}",
+                    fontSize = 10.sp, color = Color(0xFF95A4B8))
+            }
+        }
+    }
+}
+
+@Composable
+internal fun Artwork(title: Title, modifier: Modifier = Modifier) {
     val drawable =
         when (title.artworkKey) {
             "mountain" -> R.drawable.poster_mountain
@@ -348,6 +344,43 @@ private fun Artwork(title: Title, modifier: Modifier = Modifier) {
             "orbit" -> R.drawable.poster_orbit
             else -> null
         }
+    val remote by produceState<ImageBitmap?>(null, title.artworkKey) {
+        val address = title.artworkKey ?: return@produceState
+        if (drawable != null) return@produceState
+        value = withContext(Dispatchers.IO) {
+            try {
+                val uri = URI(address)
+                if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null)
+                    return@withContext null
+                val connection = uri.toURL().openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    connection.instanceFollowRedirects = false
+                    if (connection.responseCode != 200 ||
+                        !connection.contentType.orEmpty().startsWith("image/")) return@withContext null
+                    val data = connection.inputStream.use { input ->
+                        val output = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (output.size() <= 2_000_000) {
+                            val count = input.read(buffer, 0, minOf(buffer.size, 2_000_001 - output.size()))
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                        }
+                        output.toByteArray()
+                    }
+                    if (data.size > 2_000_000) return@withContext null
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+                    val options = BitmapFactory.Options().apply {
+                        inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 512).coerceAtLeast(1)
+                    }
+                    BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
+                } finally { connection.disconnect() }
+            } catch (_: Exception) { null }
+        }
+    }
     Box(modifier.background(Color(0xFF24354A)), contentAlignment = Alignment.Center) {
         if (drawable != null)
             Image(
@@ -356,8 +389,11 @@ private fun Artwork(title: Title, modifier: Modifier = Modifier) {
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
+        else if (remote != null)
+            Image(bitmap = remote!!, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize())
         Text(
-            if (drawable == null) title.name else title.name.uppercase(),
+            if (drawable == null && remote == null) title.name else title.name.uppercase(),
             fontSize = 19.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White,

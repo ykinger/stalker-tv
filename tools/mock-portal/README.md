@@ -47,6 +47,10 @@ GET requests support `/server/load.php`, `/portal.php`, and
 10. `?type=vod&action=create_link&cmd=...` accepts only a returned movie or
     episode command and resolves it to the same sample MP4.
 
+The mock's `screenshot_uri` values are synthetic bundled-artwork keys
+(`mountain`, `ocean`, `orbit`), not real poster URLs. The app also accepts
+HTTP(S) artwork URLs from portals that supply them.
+
 Command wrappers are data, never executable commands. Every channel plays the same
 bundled 15-second Big Buck Bunny excerpt, **not a live stream**. Credits:
 [sample licence and attribution](../../docs/ASSETS.md).
@@ -55,9 +59,8 @@ Wrong/missing MAC returns HTTP 403. Missing/expired token returns HTTP 401.
 Set `TOKEN_TTL_SECONDS` to a short duration in Compose and recreate the service to test expiry.
 Tokens live only in memory; restart clears them. These synthetic endpoints are
 test fixtures, not proof of compatibility with every Stalker/Ministra portal.
-**The Android app still fetches only live channels**: its EPG, movie and series
-adapters must be implemented before this new data appears in the app. This
-fixture does not simulate HLS/DASH or network failures.
+The Android app loads these fixtures into the connected guide, Movies, and
+Series screens. This fixture does not simulate HLS/DASH or network failures.
 
 Run mock HTTP contract tests without Docker:
 

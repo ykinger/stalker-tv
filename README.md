@@ -13,12 +13,19 @@ Select a channel to resolve and preview it, then press OK again for full-screen
 playback. On the next launch, the selected saved playlist reconnects directly to
 the guide; deselect it in Settings to stop automatic connections. If the server is
 offline, the app offers retry or playlist management instead of opening the guide.
+The left navigation keeps TV, Movies, Shows and Recordings together. The second
+column shows portal categories for the selected section; Movies and Shows use
+vertically scrolling poster grids on the right. The remote Back key moves from
+content to categories to navigation.
 Docker serves the same sample MP4 for all five channels, not live TV.
 **Open offline demo** retains the original sample browsing experience.
 
-Connected guide programme cells currently show "No information": the Stalker EPG
-adapter is not implemented. Recordings and My list are navigation placeholders,
-not functional DVR or favourites. The app uses its own branding and icons.
+The connected guide loads programme information from the selected portal when
+available. Movies and Shows browse portal VOD titles, seasons, and episodes;
+movie and episode playback links resolve through the portal. The local mock
+supplies synthetic fixtures, not evidence of support for every real provider.
+Recordings and My list remain navigation placeholders, not functional DVR or
+favourites. The app uses its own branding and icons.
 
 ## Build and run
 

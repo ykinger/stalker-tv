@@ -208,8 +208,12 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         finally { loadingProfiles = false }
     }
     LaunchedEffect(screen, busy) {
-        if (screen != "demo" && screen != "home" && !(screen == "connecting" && busy))
-            firstFocus.requestFocus()
+        if (screen != "demo" && screen != "home" && !(screen == "connecting" && busy)) {
+            withFrameNanos { }
+            // Connection and playlist loading can replace the screen before its
+            // first focus target is attached. Do not crash during that transition.
+            try { firstFocus.requestFocus() } catch (_: IllegalStateException) { }
+        }
     }
     BackHandler(screen != "landing" && screen != "home" && screen != "connecting") {
         if (!busy) screen = when (screen) {
@@ -400,7 +404,8 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                 val token = testPortal(candidate)
                                 store.save(updated, updated.lastIndex)
                                 val result = StalkerContentRepository(candidate, token).catalogue()
-                                token to (result as? com.ykinger.stalkertv.core.ProviderResult.Success)?.value?.titles?.size
+                                token to (result as? com.ykinger.stalkertv.core.ProviderResult.Success)?.value?.titles
+                                    ?.count { it.kind == com.ykinger.stalkertv.core.ContentKind.CHANNEL }
                             }
                             profiles = updated
                             sessionToken = token

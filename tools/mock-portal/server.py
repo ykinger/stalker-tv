@@ -18,15 +18,15 @@ TOKENS = {}
 MOVIES = [
     {"id": "101", "name": "Sample Feature", "category_id": "11", "movie_type": "movie",
      "year": "2022", "description": "Fictional movie for local UI testing.",
-     "cmd": "ffmpeg http://localhost/vod/movie/101", "screenshot_uri": ""},
+     "cmd": "ffmpeg http://localhost/vod/movie/101", "screenshot_uri": "mountain"},
     {"id": "102", "name": "Sample Documentary", "category_id": "11", "movie_type": "movie",
      "year": "2024", "description": "Fictional documentary for local UI testing.",
-     "cmd": "ffmpeg http://localhost/vod/movie/102", "screenshot_uri": ""},
+     "cmd": "ffmpeg http://localhost/vod/movie/102", "screenshot_uri": "ocean"},
 ]
 SERIES = [
     {"id": "201", "name": "Sample Series", "category_id": "21", "movie_type": "series",
      "is_series": 1, "year": "2023", "description": "Fictional show for local UI testing.",
-     "screenshot_uri": ""},
+     "screenshot_uri": "orbit"},
 ]
 SEASONS = [
     {"id": "301", "series_id": "201", "season_number": 1, "name": "Season 1"},

@@ -67,7 +67,31 @@ class ProfileSetupTest {
         compose.waitUntil(15000) {
             compose.onAllNodesWithText("Demo Channel 1").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("Demo Channel 5").assertExists()
+        compose.waitUntil(15000) {
+            compose.onAllNodesWithText("Featured Programme 1").fetchSemanticsNodes().isNotEmpty()
+        }
+        val input = InstrumentationRegistry.getInstrumentation()
+        compose.onNodeWithText("Movies").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("Demo Movies").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("All Movies").assertExists()
+        compose.onNodeWithText("Sample Feature").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("Play movie").assertExists()
+        compose.onNodeWithText("Play movie").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitUntil(15000) { compose.onAllNodesWithText("Playing").fetchSemanticsNodes().isNotEmpty() }
+        input.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithText("Shows").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("Demo Series").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("Sample Series").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitUntil(15000) {
+            compose.onAllNodesWithText("A New Beginning").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("A New Beginning").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitUntil(15000) { compose.onAllNodesWithText("Playing").fetchSemanticsNodes().isNotEmpty() }
+        input.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithText("TV").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("All channels").performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.onNodeWithText("Demo Channel 1").performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitUntil(15000) { compose.onAllNodesWithText("Connecting…").fetchSemanticsNodes().isEmpty() }
         compose.onNode(hasText("Demo Channel 1") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }

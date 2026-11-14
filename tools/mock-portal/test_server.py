@@ -79,6 +79,7 @@ class MockPortalTest(unittest.TestCase):
         first = self.request("vod", "get_ordered_list", token, category="*", p=1)[1]
         second = self.request("vod", "get_ordered_list", token, category="*", p=2)[1]
         self.assertEqual((first["total_items"], len(first["data"]), len(second["data"])), (3, 2, 1))
+        self.assertEqual(first["data"][0]["screenshot_uri"], "mountain")
         self.assertEqual(second["data"][0]["is_series"], 1)
         self.assertEqual(len(self.request("vod", "get_ordered_list", token, category="11")[1]["data"]), 2)
         self.assertEqual(len(self.request("vod", "get_ordered_list", token, category="21")[1]["data"]), 1)
