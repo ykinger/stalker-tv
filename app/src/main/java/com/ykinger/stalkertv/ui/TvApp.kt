@@ -63,6 +63,10 @@ private enum class Section(val label: String, val icon: ImageVector) {
 
 @Composable
 fun TvApp(container: AppContainer, demo: Boolean = true, onProfileSettings: () -> Unit = {}) {
+    if (!demo) {
+        ConnectedTvScreen(container, onProfileSettings)
+        return
+    }
     val model: CatalogueViewModel =
         viewModel(key = "catalogue-${System.identityHashCode(container)}", factory = viewModelFactory { initializer { CatalogueViewModel(container) } })
     val scenario by model.scenario.collectAsStateWithLifecycle()
@@ -178,11 +182,8 @@ private fun BrowseScreen(model: CatalogueViewModel, demo: Boolean, onProfileSett
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                Text(
-                    if (demo) "DEMO / ${scenario.name}" else "CONNECTED",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 11.sp,
-                )
+                if (demo) Text("DEMO / ${scenario.name}", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
+                else Button(onClick = onProfileSettings) { Text("Manage playlists") }
             }
             Text(
                 if (section == Section.LIVE) { if (demo) "Sample channels • programme times are local" else "Provider channels • programme times are local" }
@@ -192,7 +193,7 @@ private fun BrowseScreen(model: CatalogueViewModel, demo: Boolean, onProfileSett
             )
             when (section) {
                 Section.SETTINGS -> if (demo) Settings(scenario, model::setScenario) else Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Button(onClick = onProfileSettings) { Text("Manage profiles") }
+                    Button(onClick = onProfileSettings) { Text("Manage playlists") }
                     Button(onClick = model::refresh) { Text("Refresh channels") }
                 }
                 Section.FAVOURITES ->

@@ -4,12 +4,21 @@ Native Android TV player for users connecting their own Stalker/Ministra IPTV pr
 
 The app starts on a landing page. Choose **Add playlist → Stalker Portal** to
 enter a host/IP, registered MAC and optional serial ID, validate the connection,
-and save an encrypted local playlist. For Docker testing use host
+and save an encrypted local playlist. A processed-playlist confirmation shows the
+channel count and lets you name the playlist before **Done** opens the TV guide. For Docker testing use host
 `http://10.0.2.2:8080`, MAC `00:1A:79:00:00:01` (see
 [mock portal](tools/mock-portal/README.md)); serial may be left blank. Saving or selecting a playlist connects
-and opens Home with its channel list. Select a channel to resolve and play its
-stream. Docker serves the same sample MP4 for all five channels, not live TV.
+and opens the guide with channel groups, time slots, and a video preview.
+Select a channel to resolve and preview it, then press OK again for full-screen
+playback. On the next launch, the selected saved playlist reconnects directly to
+the guide; deselect it in Settings to stop automatic connections. If the server is
+offline, the app offers retry or playlist management instead of opening the guide.
+Docker serves the same sample MP4 for all five channels, not live TV.
 **Open offline demo** retains the original sample browsing experience.
+
+Connected guide programme cells currently show "No information": the Stalker EPG
+adapter is not implemented. Recordings and My list are navigation placeholders,
+not functional DVR or favourites. The app uses its own branding and icons.
 
 ## Build and run
 
