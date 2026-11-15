@@ -13,13 +13,14 @@ docker compose -f tools/mock-portal/compose.yaml up --build -d
 
 Open http://localhost:8080/health — expect `{"status":"ok","mock":true}`.
 
-- Laptop portal: `http://localhost:8080/server/load.php`
-- Android emulator portal: `http://10.0.2.2:8080/server/load.php`
+- Laptop host: `http://localhost:8080`
+- Android emulator host: `http://10.0.2.2:8080`
 - Fake MAC: `00:1A:79:00:00:01`
 
 In the debug Android app, open Add playlist → Stalker Portal. Enter the emulator
-host above and the fake MAC; serial ID is optional. After confirming the playlist,
-Done opens the guide with five channels fetched over HTTP. Select one to preview
+host above (without an API path) and the fake MAC; serial ID is optional. After confirming the playlist,
+Done opens the guide with the first page of channels fetched over HTTP; moving
+to the end of the page loads the rest of the mock's five channels. Select one to preview
 and press OK again to play the Docker video full-screen.
 Existing playlists can be selected from the landing screen or Settings. HTTP is enabled in debug only.
 
@@ -38,18 +39,33 @@ GET requests support `/server/load.php`, `/portal.php`, and
 7. `?type=itv&action=get_short_epg&ch_id=1&size=4` (or `get_epg_info`) returns
    four synthetic, hour-long UTC programmes for a channel, including Unix
    `start_timestamp` and `stop_timestamp`. Valid channel IDs are 1–5.
-8. `?type=vod&action=get_categories` returns Demo Movies (`11`) and Demo Series
-   (`21`). `get_ordered_list&category=*&p=1` paginates two fictional movies
-   and one fictional series; filtering by `category=11` or `21` is supported.
+8. `?type=vod&action=get_categories` returns All (`*`), Demo Movies (`11`),
+   and Demo Series (`21`). `get_ordered_list&category=*&p=1` returns the first
+   two fictional movies; page 2 returns a fictional show with `is_series=1`.
+   The older `type=series` route remains available for compatibility checks.
 9. `?type=vod&action=get_seasons&series_id=201` returns two seasons;
-   `get_episodes&series_id=201&season_id=301` returns the first season's episodes.
-   `type=series` also accepts these series queries as a fixture-specific alias.
+    `get_episodes&series_id=201&season_id=301` returns the first season's episodes.
+    `type=series` also accepts these series queries as a fixture-specific alias.
 10. `?type=vod&action=create_link&cmd=...` accepts only a returned movie or
     episode command and resolves it to the same sample MP4.
 
-The mock's `screenshot_uri` values are synthetic bundled-artwork keys
-(`mountain`, `ocean`, `orbit`), not real poster URLs. The app also accepts
-HTTP(S) artwork URLs from portals that supply them.
+The mock's `screenshot_uri` values are emulator-reachable PNG URLs under
+`PUBLIC_BASE_URL/posters/`. The images are synthetic fixtures, not the offline
+demo's bundled artwork. The app accepts HTTP(S) artwork URLs from portals.
+
+The service writes redacted request diagnostics to Docker logs: request type,
+action, category, page, response status, and returned item count. MACs, tokens,
+commands, and complete URLs are never logged. Use
+`docker compose -f tools/mock-portal/compose.yaml logs -f portal` while
+refreshing a playlist to compare the client's requests with mock responses.
+
+TiviMate 5.3.3 was observed requesting both `type=vod` and `type=series` on
+an Android TV emulator. After separating their responses, a fresh import
+reported 5 channels, 2 movies, and 1 show. The free installation displayed
+“No movies” despite importing counts; its playlist update and other settings
+were Premium-locked. Its actual VOD poster display and playback remain
+**unverified** without a Premium-enabled installation. Import counts alone
+are not proof of full VOD compatibility.
 
 Command wrappers are data, never executable commands. Every channel plays the same
 bundled 15-second Big Buck Bunny excerpt, **not a live stream**. Credits:

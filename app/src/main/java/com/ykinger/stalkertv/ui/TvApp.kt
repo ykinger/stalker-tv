@@ -170,7 +170,7 @@ private fun BrowseScreen(model: CatalogueViewModel, demo: Boolean, onProfileSett
                 Text(
                     "Your content. Your space.",
                     fontSize = 10.sp,
-                    color = Color(0xFF95A4B8),
+                    color = Color(0xFFABB0B3),
                     modifier = Modifier.padding(12.dp),
                 )
             }
@@ -195,7 +195,7 @@ private fun BrowseScreen(model: CatalogueViewModel, demo: Boolean, onProfileSett
             Text(
                 if (section == Section.LIVE) { if (demo) "Sample channels • programme times are local" else "Provider channels • programme times are local" }
                 else "A preview of your next watch",
-                color = Color(0xFF95A4B8),
+                color = Color(0xFFABB0B3),
                 modifier = Modifier.padding(top = 4.dp, bottom = 18.dp),
             )
             when (section) {
@@ -249,12 +249,12 @@ private fun CatalogueContent(
                 textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
                 modifier =
                     Modifier.fillMaxWidth()
-                        .background(Color(0xFF1D2B3E), RoundedCornerShape(8.dp))
+                        .background(Color(0xFF303436), RoundedCornerShape(8.dp))
                         .padding(16.dp),
             )
             Text(
                 "Type a title using your keyboard or TV input method",
-                color = Color(0xFF95A4B8),
+                color = Color(0xFFABB0B3),
                 fontSize = 12.sp,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
@@ -329,7 +329,7 @@ internal fun PosterCard(title: Title, modifier: Modifier = Modifier, onClick: ()
                 Text(title.name, maxLines = 2, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 Text(if (title.kind == ContentKind.CHANNEL) "View guide & watch"
                     else "${title.year ?: ""}  •  ${title.kind.name.lowercase()}",
-                    fontSize = 10.sp, color = Color(0xFF95A4B8))
+                    fontSize = 10.sp, color = Color(0xFFABB0B3))
             }
         }
     }
@@ -381,7 +381,7 @@ internal fun Artwork(title: Title, modifier: Modifier = Modifier) {
             } catch (_: Exception) { null }
         }
     }
-    Box(modifier.background(Color(0xFF24354A)), contentAlignment = Alignment.Center) {
+    Box(modifier.background(Color(0xFF303436)), contentAlignment = Alignment.Center) {
         if (drawable != null)
             Image(
                 painterResource(drawable),
@@ -411,7 +411,7 @@ private fun Settings(scenario: MockScenario, onChange: (MockScenario) -> Unit) {
         Text("Mock provider", style = MaterialTheme.typography.titleLarge)
         Text(
             "No portal connection or credentials are used. Choose a scenario, then open a content section.",
-            color = Color(0xFF95A4B8),
+            color = Color(0xFFABB0B3),
         )
         MockScenario.entries.forEach { value ->
             Button(onClick = { onChange(value) }) {
@@ -474,7 +474,7 @@ private fun DetailScreen(model: DetailViewModel, onBack: () -> Unit, onPlay: (St
                     item {
                         Text(
                             detail.title.description ?: "No description available.",
-                            color = Color(0xFFB4C1D2),
+                            color = Color(0xFFABB0B3),
                         )
                     }
                     item {

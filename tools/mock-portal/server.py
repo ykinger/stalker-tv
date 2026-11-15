@@ -3,7 +3,9 @@
 import json
 import os
 import secrets
+import struct
 import time
+import zlib
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -15,18 +17,54 @@ TOKENS = {}
 
 # Deliberately small, synthetic fixtures. IDs and commands remain stable across
 # requests; dates in the EPG are anchored to the current UTC hour.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://10.0.2.2:8080").rstrip("/")
+POSTERS = ("mountain", "ocean", "orbit")
+
+
+def poster_png(name):
+    """Small, self-contained PNG fixtures; clients need no bundled artwork keys."""
+    width, height = 240, 360
+    pixels = bytearray()
+    for y in range(height):
+        pixels.append(0)  # PNG scanline filter: none
+        for x in range(width):
+            if name == "mountain":
+                color = ((19, 47, 79) if y < 160 else
+                         (43, 79, 96) if y < 290 - abs(x - 120) else (95, 133, 111))
+            elif name == "ocean":
+                color = ((14, 72, 107) if y < 145 else
+                         (22 + y // 18, 107 + y // 22, 146 + y // 32))
+                if y > 145 and (y + x // 3) % 38 < 3:
+                    color = (137, 188, 189)
+            else:
+                distance = (x - 120) ** 2 + (y - 170) ** 2
+                color = ((202, 162, 111) if distance < 64 ** 2 else
+                         (55, 64, 121) if distance < 78 ** 2 else (20, 27, 59))
+            pixels.extend(color)
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(bytes(pixels), 9)) + chunk(b"IEND", b""))
+
+
+POSTER_IMAGES = {name: poster_png(name) for name in POSTERS}
+
 MOVIES = [
     {"id": "101", "name": "Sample Feature", "category_id": "11", "movie_type": "movie",
      "year": "2022", "description": "Fictional movie for local UI testing.",
-     "cmd": "ffmpeg http://localhost/vod/movie/101", "screenshot_uri": "mountain"},
+      "cmd": "ffmpeg http://localhost/vod/movie/101", "screenshot_uri": f"{PUBLIC_BASE_URL}/posters/mountain.png"},
     {"id": "102", "name": "Sample Documentary", "category_id": "11", "movie_type": "movie",
      "year": "2024", "description": "Fictional documentary for local UI testing.",
-     "cmd": "ffmpeg http://localhost/vod/movie/102", "screenshot_uri": "ocean"},
+      "cmd": "ffmpeg http://localhost/vod/movie/102", "screenshot_uri": f"{PUBLIC_BASE_URL}/posters/ocean.png"},
 ]
 SERIES = [
     {"id": "201", "name": "Sample Series", "category_id": "21", "movie_type": "series",
      "is_series": 1, "year": "2023", "description": "Fictional show for local UI testing.",
-     "screenshot_uri": "orbit"},
+     "screenshot_uri": f"{PUBLIC_BASE_URL}/posters/orbit.png"},
 ]
 SEASONS = [
     {"id": "301", "series_id": "201", "season_number": 1, "name": "Season 1"},
@@ -79,6 +117,12 @@ class Portal(SimpleHTTPRequestHandler):
 
     def reply(self, data, status=200):
         body = json.dumps(data).encode()
+        if hasattr(self, "diagnostic"):
+            payload = data.get("js", {})
+            count = len(payload) if isinstance(payload, list) else (
+                len(payload.get("data", [])) if isinstance(payload, dict) and
+                isinstance(payload.get("data"), list) else None)
+            print(json.dumps({**self.diagnostic, "status": status, "items": count}), flush=True)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
@@ -90,6 +134,20 @@ class Portal(SimpleHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == "/health":
             return self.reply({"status": "ok", "mock": True})
+        if url.path.startswith("/posters/"):
+            name = url.path.removeprefix("/posters/").removesuffix(".png")
+            image = POSTER_IMAGES.get(name) if url.path == f"/posters/{name}.png" else None
+            self.diagnostic = {"type": "asset", "action": "poster"}
+            if image is None:
+                return self.reply({"error": "Not found"}, 404)
+            print(json.dumps({**self.diagnostic, "status": 200, "bytes": len(image)}), flush=True)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(image)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(image)
+            return
         if url.path == "/sample.mp4":
             return super().do_GET()
         if url.path not in ("/portal.php", "/server/load.php", "/stalker_portal/server/load.php"):
@@ -98,6 +156,16 @@ class Portal(SimpleHTTPRequestHandler):
         params = parse_qs(url.query)
         action = params.get("action", [""])[0]
         kind = params.get("type", [""])[0]
+        self.diagnostic = {
+            "type": kind if kind in ("stb", "itv", "vod", "series", "account_info") else "other",
+            "action": action if action in (
+                "handshake", "get_profile", "get_main_info", "get_genres", "get_categories",
+                "get_all_channels", "get_ordered_list", "get_seasons", "get_series_info",
+                "get_episodes", "get_series_data", "create_link", "get_short_epg", "get_epg_info"
+            ) else "other",
+            "category": params.get("category", [""])[0] if params.get("category", [""])[0] in ("*", "0", "11", "21") else "other",
+            "page": params.get("p", [""])[0] if params.get("p", [""])[0] in ("1", "2", "3") else "other",
+        }
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get("Cookie", ""))
@@ -157,12 +225,12 @@ class Portal(SimpleHTTPRequestHandler):
             if cmd not in [f"ffmpeg http://localhost/ch/{i}_" for i in range(1, 6)]:
                 return self.reply({"js": {"error": "Unknown channel"}}, 400)
             # Configured address must be reachable by the Android client.
-            base = os.getenv("PUBLIC_BASE_URL", "http://10.0.2.2:8080").rstrip("/")
-            return self.reply({"js": {"cmd": f"ffmpeg {base}/sample.mp4"}})
+            return self.reply({"js": {"cmd": f"ffmpeg {PUBLIC_BASE_URL}/sample.mp4"}})
         if kind in ("vod", "series") and action in ("get_categories", "get_genres"):
-            categories = [{"id": "11", "title": "Demo Movies"},
-                          {"id": "21", "title": "Demo Series"}]
-            return self.reply({"js": categories if kind == "vod" else categories[1:]})
+            categories = ([{"id": "*", "title": "All"}, {"id": "11", "title": "Demo Movies"},
+                           {"id": "21", "title": "Demo Series"}] if kind == "vod" else
+                           [{"id": "21", "title": "Demo Series"}])
+            return self.reply({"js": categories})
         if kind in ("vod", "series") and action in ("get_ordered_list", "get_all_channels"):
             category = params.get("category", ["*"])[0]
             rows = MOVIES + SERIES if kind == "vod" else SERIES
@@ -190,8 +258,7 @@ class Portal(SimpleHTTPRequestHandler):
             cmd = params.get("cmd", [""])[0]
             if cmd not in {row["cmd"] for row in MOVIES + EPISODES}:
                 return self.reply({"js": {"error": "Unknown video"}}, 400)
-            base = os.getenv("PUBLIC_BASE_URL", "http://10.0.2.2:8080").rstrip("/")
-            return self.reply({"js": {"cmd": f"ffmpeg {base}/sample.mp4"}})
+            return self.reply({"js": {"cmd": f"ffmpeg {PUBLIC_BASE_URL}/sample.mp4"}})
         return self.reply({"js": {"error": "Unsupported mock action"}}, 400)
 
 

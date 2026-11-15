@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Stalker TV" type="AndroidRunConfigurationType" factoryName="Android App">
+    <module name="StalkerTV.app" />
+    <option name="DEPLOY" value="true" />
+    <option name="CLEAR_APP_STORAGE" value="false" />
+    <option name="MODE" value="specific_activity" />
+    <option name="ACTIVITY_CLASS" value="com.ykinger.stalkertv.MainActivity" />
+    <method v="2">
+      <option name="Android.Gradle.BeforeRunTask" enabled="true" />
+    </method>
+  </configuration>
+</component>

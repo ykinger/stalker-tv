@@ -24,10 +24,10 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(
                 colorScheme =
                     darkColorScheme(
-                        primary = Color(0xFF83D5CC),
-                        onPrimary = Color(0xFF071C1A),
-                        background = Color(0xFF0B101A),
-                        surface = Color(0xFF141D2C),
+                        primary = Color(0xFF168DD0),
+                        onPrimary = Color.White,
+                        background = Color(0xFF101314),
+                        surface = Color(0xFF24282A),
                         onSurface = Color(0xFFF0F3F7),
                         onBackground = Color(0xFFF0F3F7),
                     )

@@ -4,9 +4,11 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
@@ -19,27 +21,46 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
-import java.net.HttpURLConnection
 import java.net.URI
 import java.net.NetworkInterface
 import java.net.URLEncoder
 import java.security.KeyStore
+import java.util.TimeZone
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.json.JSONArray
+import org.json.JSONException
+import com.ykinger.stalkertv.BuildConfig
+import com.ykinger.stalkertv.AppContainer
+import com.ykinger.stalkertv.TvApplication
+import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okio.Buffer
+
+internal const val PORTAL_TAG = "StalkerPortal"
 
 internal data class PortalProfile(val serial: String, val host: String, val mac: String, val name: String = host)
+
+private val settingsBackground = Color(0xFF101314)
+private val settingsPanel = Color(0xFF24282A)
+private val settingsHeader = Color(0xFF303436)
+private val settingsMuted = Color(0xFFABB0B3)
+private val settingsBlue = Color(0xFF168DD0)
 
 /** Stores configuration encrypted; authentication tokens remain in memory only. */
 private class ProfileStore(context: Context) {
@@ -88,53 +109,142 @@ private class ProfileStore(context: Context) {
     }
 }
 
-private fun endpoint(host: String): String {
+internal fun endpoint(host: String): String {
     val uri = URI(if (host.contains("://")) host else "http://$host")
     require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank()
         && uri.userInfo == null && uri.query == null && uri.fragment == null
-        && (uri.port == -1 || uri.port in 1..65535))
-    val path = uri.path.orEmpty().trimEnd('/')
-    return uri.toString().trimEnd('/') + if (path.endsWith(".php")) "" else "/server/load.php"
+        && (uri.port == -1 || uri.port in 1..65535)
+        && uri.rawPath.isNullOrEmpty()) { "Enter only the portal host, without a path." }
+    return uri.toString()
 }
 
-internal fun portalRequest(profile: PortalProfile, query: String, token: String? = null): Any {
-        val connection = URI("${profile.host}?$query").toURL().openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 5000
-            connection.readTimeout = 5000
-            connection.instanceFollowRedirects = false
-            connection.setRequestProperty("Cookie", "mac=${profile.mac}")
-            if (token != null) connection.setRequestProperty("Authorization", "Bearer $token")
-            when (connection.responseCode) {
-                401, 403 -> error("Device registration or session rejected.")
-                200 -> Unit
-                else -> error("Portal returned an unexpected HTTP status.")
-            }
-            val body = connection.inputStream.use { input ->
-                val output = java.io.ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    check(output.size() + count <= 1024 * 1024) { "Portal response is too large." }
-                    output.write(buffer, 0, count)
+private class PortalResponseFormatException : IllegalStateException("Portal returned non-JSON data.")
+private class PortalHttpException(val status: Int) : IllegalStateException("Portal returned HTTP $status.")
+private data class VerifiedPortal(val apiHost: String, val token: String, val watchdogSeconds: Int?)
+private data class PortalSession(val token: String, val watchdogSeconds: Int?)
+
+/** Display the server address, not the API route used by the client. */
+private fun displayHost(endpoint: String): String = URI(endpoint).let { "${it.scheme}://${it.rawAuthority}" }
+
+internal fun portalRequest(profile: PortalProfile, query: String, token: String? = null,
+    container: AppContainer = AppContainer()): Any {
+    // Only known protocol names enter diagnostics; never log query parameters,
+    // URLs, response bodies, or exception messages (they may contain credentials).
+    val params = "https://localhost/?$query".toHttpUrl()
+    val type = params.queryParameter("type")?.takeIf {
+        it in setOf("stb", "itv", "vod", "series", "account_info", "watchdog", "epg")
+    } ?: "other"
+    val action = params.queryParameter("action")?.takeIf {
+        it in setOf("handshake", "get_profile", "get_main_info", "get_genres",
+            "get_categories", "get_all_channels", "get_ordered_list", "get_seasons",
+            "get_series_info", "get_episodes", "get_series_data", "create_link",
+            "get_short_epg", "get_epg_info", "get_simple_data_table", "get_events")
+    } ?: "other"
+    val stage = "$type.$action"
+    var address = URI("${profile.host}?$query")
+    val visited = mutableSetOf<URI>()
+    try {
+        repeat(6) { hop ->
+            check(visited.add(address)) { "Portal redirect loop." }
+            val started = System.nanoTime()
+            val request = Request.Builder().url(address.toString())
+                .header("Cookie", "mac=${profile.mac}; stb_lang=en; timezone=${TimeZone.getDefault().id}")
+                .header("User-Agent",
+                    "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG250 stbapp ver: 4 rev: 1812 Safari/533.3")
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .apply { if (token != null) header("Authorization", "Bearer $token") }
+                .build()
+            val client = if (type == "stb") container.handshakeClient else container.portalClient
+            client.newCall(request).execute().use { response ->
+                val status = response.code
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                    "stage=$stage http=$status hop=$hop elapsedMs=${(System.nanoTime() - started) / 1_000_000}")
+                if (status in setOf(301, 302, 303, 307, 308)) {
+                    val location = response.header("Location")
+                    check(hop < 5) { "Too many portal redirects." }
+                    address = portalRedirect(address, location)
+                    return@repeat
                 }
-                output.toByteArray()
+                when (status) {
+                    401, 403 -> error("Device registration or session rejected.")
+                    200 -> Unit
+                    else -> throw PortalHttpException(status)
+                }
+                val buffer = Buffer()
+                response.body?.source()?.let { source ->
+                    while (buffer.size <= 1024L * 1024 &&
+                        source.read(buffer, 1024L * 1024 + 1 - buffer.size) != -1L) { }
+                }
+                check(buffer.size <= 1024 * 1024) { "Portal response is too large." }
+                val body = buffer.readByteArray()
+                val response = String(body, Charsets.UTF_8)
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage bytes=${body.size} hop=$hop")
+                if (!response.trimStart().startsWith("{")) {
+                    throw PortalResponseFormatException()
+                }
+                val result = try {
+                    JSONObject(response).get("js")
+                } catch (error: JSONException) {
+                    if (stage == "stb.handshake") throw PortalResponseFormatException()
+                    throw error
+                }
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage parsed=${result.javaClass.simpleName}")
+                return result
             }
-            return JSONObject(String(body, Charsets.UTF_8)).get("js")
-        } finally {
-            connection.disconnect()
         }
+        error("Too many portal redirects.")
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+        throw error
+    }
 }
 
-private fun testPortal(profile: PortalProfile): String {
-    fun request(query: String, token: String? = null) = portalRequest(profile, query, token) as JSONObject
-    val token = request("type=stb&action=handshake&JsHttpRequest=1-xml").getString("token")
-    check(token.isNotBlank() && token.none { it == '\r' || it == '\n' })
+private fun testPortal(profile: PortalProfile, container: AppContainer): VerifiedPortal {
+    var lastFailure: Exception? = null
+    for ((index, candidate) in portalApiCandidates(profile.host).withIndex()) {
+        val apiProfile = profile.copy(host = candidate)
+        try {
+            val session = verifyPortal(apiProfile, container)
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=portal.discovery candidate=$index verified=true")
+            return VerifiedPortal(candidate, session.token, session.watchdogSeconds)
+        } catch (error: PortalResponseFormatException) {
+            lastFailure = error
+        } catch (error: PortalHttpException) {
+            if (error.status !in listOf(404, 405, 500, 502, 503, 504)) throw error
+            lastFailure = error
+        }
+        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=portal.discovery candidate=$index rejected=true")
+    }
+    throw lastFailure ?: PortalResponseFormatException()
+}
+
+private fun verifyPortal(profile: PortalProfile, container: AppContainer): PortalSession {
+    fun request(query: String, token: String? = null) =
+        portalRequest(profile, query, token, container) as? JSONObject ?: throw PortalResponseFormatException()
+    val token = try {
+        request("type=stb&action=handshake&token=&JsHttpRequest=1-xml").getString("token")
+            .also { check(it.isNotBlank() && it.none { char -> char == '\r' || char == '\n' }) }
+    } catch (error: Exception) {
+        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=stb.handshake.validate failure=${error.javaClass.simpleName}")
+        throw error
+    }
+    if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=stb.handshake.validate tokenPresent=true")
     val serialParam = if (profile.serial.isBlank()) "" else "&sn=${URLEncoder.encode(profile.serial, "UTF-8")}"
-    val profileResult = request("type=stb&action=get_profile${serialParam}&JsHttpRequest=1-xml", token)
-    check(!profileResult.has("error") && profileResult.has("id"))
-    return token
+    val profileResult = try {
+        val profileResult = request("type=stb&action=get_profile${serialParam}" +
+            "&stb_type=MAG250&hw_version=1.7-BD-00&image_version=218&client_type=STB" +
+            "&JsHttpRequest=1-xml", token)
+        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            "stage=stb.get_profile.validate hasId=${profileResult.has("id")} hasError=${profileResult.has("error")}")
+        check(!profileResult.has("error") && profileResult.has("id"))
+        profileResult
+    } catch (error: Exception) {
+        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=stb.get_profile.validate failure=${error.javaClass.simpleName}")
+        throw error
+    }
+    return PortalSession(token, profileResult.optInt("watchdog_timeout", 0).takeIf { it in 15..3600 })
 }
 
 /** Android often hides hardware MACs; never substitute the platform's placeholder or a demo MAC. */
@@ -151,6 +261,7 @@ private fun availableDeviceMac(): String? = try {
 @Composable
 fun ProfileSetup(onDemo: @Composable () -> Unit) {
     val context = LocalContext.current
+    val container = remember(context) { (context.applicationContext as TvApplication).container }
     val store = remember { ProfileStore(context) }
     var profiles by remember { mutableStateOf<List<PortalProfile>>(emptyList()) }
     var loadingProfiles by remember { mutableStateOf(true) }
@@ -162,9 +273,16 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var selectedProfile by remember { mutableStateOf<PortalProfile?>(null) }
     var sessionToken by remember { mutableStateOf<String?>(null) }
+    var sessionApiHost by remember { mutableStateOf<String?>(null) }
+    var sessionWatchdogSeconds by remember { mutableStateOf<Int?>(null) }
     var reconnectProfile by remember { mutableStateOf<PortalProfile?>(null) }
     var processedChannels by remember { mutableStateOf<Int?>(null) }
     var processedName by remember { mutableStateOf("") }
+    var editingIndex by remember { mutableIntStateOf(-1) }
+    var editName by remember { mutableStateOf("") }
+    var editHost by remember { mutableStateOf("") }
+    var editMac by remember { mutableStateOf("") }
+    var editSerial by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val firstFocus = remember { FocusRequester() }
     // A newly created activity starts at Home, not a restored player/details route.
@@ -172,28 +290,48 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     fun connect(profile: PortalProfile) {
         selectedProfile = profile
         sessionToken = null
+        sessionApiHost = null
+        sessionWatchdogSeconds = null
         reconnectProfile = profile
         busy = true
         screen = "connecting"
         message = "Connecting…"
         scope.launch {
+            var stage = "portal.verify"
             try {
-                val token = withContext(Dispatchers.IO) {
-                    val token = testPortal(profile)
-                    store.select(profiles.indexOf(profile).also { require(it >= 0) })
-                    token
+                val verified = withContext(Dispatchers.IO) {
+                    val result = testPortal(profile, container)
+                    stage = "profile.store.select"
+                    val index = profiles.indexOf(profile).also { require(it >= 0) }
+                    if (store.selectedIndex() != index) store.select(index)
+                    result
                 }
-                sessionToken = token
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=playlist.connect verified=true")
+                sessionToken = verified.token
+                sessionApiHost = verified.apiHost
+                sessionWatchdogSeconds = verified.watchdogSeconds
                 reconnectProfile = null
                 message = "Connection successful."
                 screen = "home"
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                 selectedProfile = null
-                message = "Connection failed. Check the host, registration and server, then retry."
+                message = if (error is PortalHttpException && error.status == 429)
+                    "The portal is limiting requests (HTTP 429). Wait before retrying."
+                else "Connection failed. Check the host, registration and server, then retry."
             } finally { busy = false }
         }
+    }
+    fun edit(index: Int) {
+        val profile = profiles[index]
+        editingIndex = index
+        editName = profile.name
+        editHost = displayHost(profile.host)
+        editMac = profile.mac
+        editSerial = profile.serial
+        message = ""
     }
     LaunchedEffect(Unit) {
         val detected = withContext(Dispatchers.IO) { availableDeviceMac() }
@@ -204,7 +342,10 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             val (saved, index) = withContext(Dispatchers.IO) { store.load() to store.selectedIndex() }
             profiles = saved
             if (index in saved.indices) connect(saved[index])
-        } catch (_: Exception) { message = "Saved playlist could not be read. Add it again." }
+        } catch (error: Exception) {
+            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=profile.store.load failure=${error.javaClass.simpleName}")
+            message = "Saved playlist could not be read. Add it again."
+        }
         finally { loadingProfiles = false }
     }
     LaunchedEffect(screen, busy) {
@@ -215,8 +356,31 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             try { firstFocus.requestFocus() } catch (_: IllegalStateException) { }
         }
     }
+    LaunchedEffect(sessionToken, sessionApiHost, sessionWatchdogSeconds) {
+        val active = selectedProfile ?: return@LaunchedEffect
+        val apiHost = sessionApiHost ?: return@LaunchedEffect
+        val token = sessionToken ?: return@LaunchedEffect
+        val interval = sessionWatchdogSeconds ?: return@LaunchedEffect
+        while (true) {
+            delay(interval * 1_000L)
+            try {
+                withContext(Dispatchers.IO) {
+                        portalRequest(active.copy(host = apiHost),
+                            "type=watchdog&action=get_events&cur_play_type=0&init_num=0" +
+                                "&buffering_err=0&need_quality=0&JsHttpRequest=1-xml", token, container)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=watchdog.get_events failure=${error.javaClass.simpleName}")
+            }
+        }
+    }
     BackHandler(screen != "landing" && screen != "home" && screen != "connecting") {
         if (!busy) screen = when (screen) {
+            "settings" -> if (editingIndex >= 0) {
+                editingIndex = -1
+                "settings"
+            } else if (sessionToken != null) "home" else "landing"
             "form" -> "protocol"
             "protocol" -> if (profiles.isEmpty()) "landing" else "settings"
             "home" -> "settings"
@@ -229,9 +393,10 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     }
     val connectedProfile = selectedProfile
     val connectedToken = sessionToken
-    if (screen == "home" && connectedProfile != null && connectedToken != null) {
-        val repository = remember(connectedProfile, connectedToken) {
-            StalkerContentRepository(connectedProfile, connectedToken)
+    val activeApiHost = sessionApiHost
+    if (screen == "home" && connectedProfile != null && connectedToken != null && activeApiHost != null) {
+        val repository = remember(connectedProfile, connectedToken, activeApiHost) {
+            StalkerContentRepository(connectedProfile.copy(host = activeApiHost), connectedToken, container)
         }
         val container = remember(repository) { com.ykinger.stalkertv.AppContainer(repository) }
         key(homeInstance) {
@@ -240,14 +405,14 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         return
     }
     when (screen) {
-        "processed" -> Row(Modifier.fillMaxSize().background(Color(0xFF101417))) {
-            Box(Modifier.weight(1f).fillMaxHeight().background(Color(0xFF202528)).padding(40.dp),
+        "processed" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
+            Box(Modifier.weight(1f).fillMaxHeight().background(settingsHeader).padding(40.dp),
                 contentAlignment = Alignment.CenterStart) {
                 Text("Playlist is processed", fontSize = 32.sp, color = Color.White)
             }
             Column(Modifier.weight(0.8f).fillMaxHeight().padding(36.dp),
                 verticalArrangement = Arrangement.Center) {
-                Text(processedChannels?.let { "Channels: $it" } ?: "Playlist saved", fontSize = 21.sp, color = Color.White)
+                Text(processedChannels?.let { "Channels loaded (first page): $it" } ?: "Playlist saved", fontSize = 21.sp, color = Color.White)
                 Spacer(Modifier.height(24.dp))
                 ProfileField("Playlist name", processedName, !busy) { processedName = it }
                 if (message.startsWith("Could not save playlist name") || message.startsWith("Enter a playlist name"))
@@ -280,9 +445,9 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 Button(onClick = { screen = "settings" }) { Text("Playlists") }
             }
         }
-        "connecting" -> Box(Modifier.fillMaxSize().background(Color(0xFF0B101A)), contentAlignment = Alignment.Center) {
+        "connecting" -> Box(Modifier.fillMaxSize().background(settingsBackground), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(if (busy) "Connecting to playlist…" else message)
+                Text(if (busy) "Connecting to playlist…" else message, color = Color.White)
                 if (!busy) {
                     Button(onClick = { reconnectProfile?.let(::connect) }, modifier = Modifier.focusRequester(firstFocus)) { Text("Retry connection") }
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }
@@ -290,21 +455,21 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 }
             }
         }
-        "landing" -> Box(Modifier.fillMaxSize().background(Color(0xFF101417)), contentAlignment = Alignment.Center) {
+        "landing" -> Box(Modifier.fillMaxSize().background(settingsBackground), contentAlignment = Alignment.Center) {
             Column(Modifier.fillMaxWidth(0.82f).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                Text("STALKER TV", fontSize = 30.sp, color = Color(0xFF55A8D7))
-                if (loadingProfiles) Text("Loading playlists…")
+                Text("STALKER TV", fontSize = 30.sp, color = settingsBlue)
+                if (loadingProfiles) Text("Loading playlists…", color = settingsMuted)
                 else if (profiles.isEmpty()) Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Stalker TV does not provide any content", fontSize = 25.sp, color = Color.White)
-                    Text("Add your own playlist to start watching", color = Color(0xFFABB0B3))
+                    Text("Add your own playlist to start watching", color = settingsMuted)
                 }
                 else {
-                    Text("Choose a playlist", fontSize = 28.sp)
+                    Text("Choose a playlist", fontSize = 28.sp, color = Color.White)
                     profiles.forEachIndexed { index, playlist ->
                         Button(enabled = !busy, onClick = { connect(playlist) }) {
-                            Text("${playlist.name} · ${playlist.host}")
+                             Text(playlist.name)
                         }
                     }
                 }
@@ -313,53 +478,139 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     Button(onClick = { screen = "settings" }) { Text("Settings") }
                     Button(onClick = { screen = "demo" }) { Text("Open offline demo") }
                 }
-                if (message.isNotEmpty()) Text(message)
+                if (message.isNotEmpty()) Text(message, color = settingsMuted)
             }
         }
-        "settings" -> Column(Modifier.fillMaxSize().background(Color(0xFF101417)).padding(40.dp)
-            .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Settings", fontSize = 28.sp)
-            Text(if (loadingProfiles) "Loading playlists…" else if (profiles.isEmpty()) "No playlists saved." else "Saved playlists")
-            profiles.forEachIndexed { index, profile ->
-                Column(Modifier.fillMaxWidth().background(Color(0xFF202528)).padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                     Text("Playlist ${index + 1} · ${profile.name}")
-                    Text("Host: ${profile.host}")
-                    Text("Serial ID: ${profile.serial.ifBlank { "Not provided" }}")
-                    Text("MAC: ${profile.mac}")
-                    if (selectedProfile == profile && sessionToken != null) Text("Selected · Connected")
-                    Button(enabled = !busy, onClick = { connect(profile) }) { Text("Select and connect playlist ${index + 1}") }
+        "settings" -> Row(Modifier.fillMaxSize().background(Color(0xFF0A0D0E))) {
+            Column(Modifier.weight(0.9f).fillMaxHeight().background(Color(0xFF15191A))
+                .padding(start = 36.dp, top = 34.dp, end = 28.dp, bottom = 28.dp)
+                .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("STALKER TV", color = settingsBlue, fontSize = 16.sp)
+                Text("Playlists", color = Color.White, fontSize = 32.sp)
+                Spacer(Modifier.height(8.dp))
+                if (loadingProfiles) Text("Loading playlists…", color = settingsMuted)
+                else if (profiles.isEmpty()) Text("No playlists saved.", color = Color(0xFFD0DADC))
+                profiles.forEachIndexed { index, profile ->
+                    Button(enabled = !busy, onClick = { edit(index) },
+                        modifier = if (index == 0) Modifier.fillMaxWidth().focusRequester(firstFocus) else Modifier.fillMaxWidth()) {
+                        Text(profile.name)
+                    }
+                }
+                Button(enabled = !loadingProfiles && !busy, onClick = {
+                    editingIndex = -1; message = ""; screen = "protocol"
+                }, modifier = if (profiles.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier) {
+                    Text(if (profiles.isEmpty()) "Add playlist" else "Add another playlist")
+                }
+                Button(enabled = !busy, onClick = {
+                    if (editingIndex >= 0) editingIndex = -1
+                    else screen = if (sessionToken != null) "home" else "landing"
+                }) { Text("Back") }
+            }
+            Column(Modifier.weight(1.5f).fillMaxHeight().background(settingsPanel)
+                .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val original = profiles.getOrNull(editingIndex)
+                Box(Modifier.fillMaxWidth().background(settingsHeader).padding(26.dp)) {
+                    Text(original?.name ?: "Playlists", color = Color.White, fontSize = 27.sp)
+                }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (original == null) {
+                    Text("Select a playlist to view or edit its details", color = Color.White, fontSize = 23.sp)
+                    Text("Connection details stay hidden until you choose a playlist.", color = Color(0xFFB7C8C6))
+                    if (selectedProfile == null) Text("No playlist selected. Not connected.", color = Color(0xFFB7C8C6))
+                } else {
+                    Text("Stalker Portal parameters", color = settingsBlue, fontSize = 18.sp)
+                    if (selectedProfile == original && sessionToken != null)
+                        Text("Selected · Connected", color = Color(0xFFACB6BB))
+                    ProfileField("Playlist name", editName, !busy) { editName = it }
+                    ProfileField("Portal host/IP", editHost, !busy) { editHost = it }
+                    ProfileField("MAC address", editMac, !busy) { editMac = it }
+                    ProfileField("Serial ID (optional)", editSerial, !busy) { editSerial = it }
+                    if (message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(enabled = !busy, onClick = {
+                        val candidate = try {
+                            val name = editName.trim()
+                            require(name.isNotEmpty() && name.length <= 100 && editSerial.length <= 256)
+                            require(Regex("(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}").matches(editMac.trim()))
+                            val address = editHost.trim()
+                            original.copy(name = name,
+                                host = if (address == displayHost(original.host)) original.host else endpoint(address),
+                                mac = editMac.trim().uppercase(), serial = editSerial.trim())
+                        } catch (_: Exception) {
+                            message = "Enter a name (up to 100 characters), valid HTTP(S) host, and MAC in AA:BB:CC:DD:EE:FF format."
+                            return@Button
+                        }
+                        if (profiles.withIndex().any { it.index != editingIndex && it.value.host == candidate.host &&
+                                it.value.mac == candidate.mac && it.value.serial == candidate.serial }) {
+                            message = "This playlist is already saved."
+                            return@Button
+                        }
+                        val index = editingIndex
+                        val wasSelected = selectedProfile == original
+                        val credentialsChanged = candidate.host != original.host || candidate.mac != original.mac ||
+                            candidate.serial != original.serial
+                        busy = true
+                        scope.launch {
+                            var reconnect = false
+                            try {
+                                val updated = profiles.toMutableList().apply { this[index] = candidate }
+                                withContext(Dispatchers.IO) {
+                                    store.save(updated, if (wasSelected) index else store.selectedIndex())
+                                }
+                                profiles = updated
+                                if (wasSelected) {
+                                    selectedProfile = candidate
+                                    if (credentialsChanged) {
+                                        sessionToken = null
+                                        sessionApiHost = null
+                                        sessionWatchdogSeconds = null
+                                        reconnectProfile = candidate
+                                    }
+                                }
+                                if (reconnectProfile == original) reconnectProfile = candidate
+                                editingIndex = -1
+                                message = "Playlist saved securely."
+                                reconnect = wasSelected && credentialsChanged
+                            } catch (error: Exception) {
+                                if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=profile.store.edit failure=${error.javaClass.simpleName}")
+                                message = "Could not save playlist. Please retry."
+                            } finally { busy = false }
+                            if (reconnect) connect(candidate)
+                        }
+                    }) { Text("Save") }
+                    Button(enabled = !busy, onClick = { connect(original) }) { Text("Connect") }
+                    Button(enabled = !busy && selectedProfile == original, onClick = {
+                        busy = true
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { store.select(-1) }
+                                selectedProfile = null
+                                sessionToken = null
+                                sessionApiHost = null
+                                sessionWatchdogSeconds = null
+                                reconnectProfile = null
+                                message = "No playlist selected. Not connected."
+                            } catch (_: Exception) {
+                                message = "Could not update playlist selection. Please retry."
+                            } finally { busy = false }
+                        }
+                    }) { Text("Deselect") }
+                    Button(enabled = !busy, onClick = { editingIndex = -1; message = "" }) { Text("Cancel") }
+                    }
+                }
+                if (original == null && message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
                 }
             }
-            Button(enabled = !loadingProfiles && !busy, onClick = { message = ""; screen = "protocol" }, modifier = Modifier.focusRequester(firstFocus)) {
-                Text(if (profiles.isEmpty()) "Add playlist" else "Add another playlist")
-            }
-            if (selectedProfile != null) {
-                Button(enabled = !busy, onClick = {
-                    busy = true
-                    scope.launch {
-                        try {
-                            withContext(Dispatchers.IO) { store.select(-1) }
-                            selectedProfile = null
-                            sessionToken = null
-                            reconnectProfile = null
-                            message = "Disconnected. No playlist selected."
-                        } catch (_: Exception) {
-                            message = "Could not update playlist selection. Please retry."
-                        } finally { busy = false }
-                    }
-                }) { Text("Deselect playlist") }
-            } else Text("No playlist selected. Not connected.")
-            Button(enabled = !busy, onClick = { screen = if (sessionToken != null) "home" else "landing" }) { Text("Back") }
-            if (message.isNotEmpty()) Text(message)
         }
-        "protocol", "form" -> Row(Modifier.fillMaxSize().background(Color(0xFF101417))) {
-            Box(Modifier.weight(1.1f).fillMaxHeight().background(Color(0xFF202528)).padding(30.dp),
+        "protocol", "form" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
+            Box(Modifier.weight(1.1f).fillMaxHeight().background(settingsHeader).padding(30.dp),
                 contentAlignment = Alignment.CenterStart) {
                 Text(if (screen == "protocol") "Add playlist" else "Stalker Portal", fontSize = 32.sp, color = Color.White)
             }
             if (screen == "protocol") {
-                Column(Modifier.weight(1f).fillMaxHeight().background(Color(0xFF101417)).padding(32.dp),
+                Column(Modifier.weight(1f).fillMaxHeight().background(settingsPanel).padding(32.dp),
                     verticalArrangement = Arrangement.Center) {
                     Text("Playlist type", fontSize = 24.sp, color = Color.White)
                     Spacer(Modifier.height(22.dp))
@@ -368,17 +619,17 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     Button(onClick = { screen = if (profiles.isEmpty()) "landing" else "settings" }) { Text("Back") }
                 }
             } else {
-                Column(Modifier.weight(1.15f).fillMaxHeight().background(Color(0xFF101417)).padding(24.dp)
+                Column(Modifier.weight(1.15f).fillMaxHeight().background(settingsPanel).padding(24.dp)
                     .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Connection details", fontSize = 22.sp, color = Color.White)
                     ProfileField("Portal host/IP", host, !busy, Modifier.focusRequester(firstFocus)) { host = it }
-                    Text("Docker emulator: http://10.0.2.2:8080", fontSize = 12.sp)
+                    Text("Enter only the host. Local mock: http://10.0.2.2:8080", fontSize = 12.sp, color = settingsMuted)
                     ProfileField("MAC address", mac, !busy) { mac = it }
-                    Text("Use your provider-registered MAC. Docker demo: 00:1A:79:00:00:01", fontSize = 12.sp)
+                    Text("Use your provider-registered MAC. Docker demo: 00:1A:79:00:00:01", fontSize = 12.sp, color = settingsMuted)
                     ProfileField("Serial ID (optional)", serial, !busy) { serial = it }
-                    if (message.isNotEmpty()) Text(message)
+                    if (message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
                 }
-                Column(Modifier.weight(0.55f).fillMaxHeight().background(Color(0xFF101417)).padding(20.dp),
+                Column(Modifier.weight(0.55f).fillMaxHeight().background(settingsBackground).padding(20.dp),
                     verticalArrangement = Arrangement.Center) {
                     Button(enabled = !busy, onClick = {
                     val candidate = try {
@@ -396,31 +647,48 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     busy = true
                     selectedProfile = candidate
                     sessionToken = null
+                    sessionApiHost = null
+                    sessionWatchdogSeconds = null
                     message = "Testing connection…"
                     scope.launch {
+                        var stage = "portal.verify"
                         try {
                             val updated = profiles + candidate
-                            val (token, count) = withContext(Dispatchers.IO) {
-                                val token = testPortal(candidate)
+                            val verified = withContext(Dispatchers.IO) {
+                                val verified = testPortal(candidate, container)
+                                stage = "profile.store.save"
                                 store.save(updated, updated.lastIndex)
-                                val result = StalkerContentRepository(candidate, token).catalogue()
-                                token to (result as? com.ykinger.stalkertv.core.ProviderResult.Success)?.value?.titles
-                                    ?.count { it.kind == com.ykinger.stalkertv.core.ContentKind.CHANNEL }
+                                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage saved=true")
+                                verified
                             }
                             profiles = updated
-                            sessionToken = token
-                            processedChannels = count
+                            sessionToken = verified.token
+                            sessionApiHost = verified.apiHost
+                            sessionWatchdogSeconds = verified.watchdogSeconds
+                            // The home screen fetches the first page once, when the user opens it.
+                            processedChannels = null
                             processedName = URI(candidate.host).host ?: "Stalker Portal"
                             serial = ""; host = ""; mac = ""
                             message = "Connection verified. Playlist saved securely."
                             screen = "processed"
                         } catch (cancelled: kotlinx.coroutines.CancellationException) {
                             throw cancelled
-                        } catch (_: java.net.SocketTimeoutException) {
+                        } catch (error: java.net.SocketTimeoutException) {
+                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Connection timed out. Check the host and retry."
-                        } catch (_: java.net.ConnectException) {
+                        } catch (error: java.net.ConnectException) {
+                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Cannot connect. Check the host and that Docker is running."
-                        } catch (_: Exception) {
+                        } catch (error: PortalResponseFormatException) {
+                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            message = "The portal returned non-JSON data, not a Stalker API response. Check the provider's portal address."
+                        } catch (error: PortalHttpException) {
+                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            message = if (error.status == 429)
+                                "The portal is limiting requests (HTTP 429). Wait before retrying."
+                            else "Connection failed (HTTP ${error.status}). Check the provider's portal response."
+                        } catch (error: Exception) {
+                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Connection or save failed. Check registration, host, and portal response."
                         } finally { busy = false }
                     }
@@ -436,10 +704,42 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
 @Composable
 private fun ProfileField(label: String, value: String, enabled: Boolean, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    Text(label, color = Color(0xFFABB0B3))
-    BasicTextField(value = value, onValueChange = onChange, enabled = enabled,
-        singleLine = true, textStyle = TextStyle(color = if (focused) Color.Black else Color.White),
-        modifier = modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color(0xFFE0E3E4) else Color(0xFF292E31), androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-            .padding(16.dp))
+    var editing by remember { mutableStateOf(false) }
+    val editorFocus = remember { FocusRequester() }
+    val fieldFocus = remember { FocusRequester() }
+    var returnAfterEditing by remember { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(editing) {
+        if (editing) {
+            editorFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
+    LaunchedEffect(editing, returnAfterEditing) {
+        if (!editing && returnAfterEditing) {
+            fieldFocus.requestFocus()
+            returnAfterEditing = false
+        }
+    }
+    BackHandler(editing) { editing = false; returnAfterEditing = true; keyboard?.hide() }
+    Text(label, color = settingsMuted)
+    Box(modifier.fillMaxWidth().focusRequester(fieldFocus)
+        .onFocusChanged {
+            focused = it.hasFocus
+            if (!it.hasFocus) editing = false
+        }
+        .semantics { contentDescription = "Edit $label" }
+        .clickable(enabled = enabled) { editing = true }
+        .background(if (focused) Color(0xFFE0E3E4) else Color(0xFF292E31),
+            androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+        .padding(16.dp)) {
+        if (editing) {
+            BasicTextField(value = value, onValueChange = onChange, enabled = enabled,
+                singleLine = true, textStyle = TextStyle(color = Color.Black),
+                modifier = Modifier.fillMaxWidth().focusRequester(editorFocus))
+        } else {
+            Text(value.ifBlank { "Press OK to edit" },
+                color = if (focused) Color.Black else if (value.isBlank()) settingsMuted else Color.White)
+        }
+    }
 }

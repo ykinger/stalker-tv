@@ -20,16 +20,25 @@ class StalkerContentTest {
         val token = (portalRequest(profile, "type=stb&action=handshake") as JSONObject).getString("token")
         val repository = StalkerContentRepository(profile, token)
         val catalogue = (repository.catalogue() as ProviderResult.Success).value
-        assertEquals(5, catalogue.titles.count { it.kind == ContentKind.CHANNEL })
-        assertEquals(2, catalogue.titles.count { it.kind == ContentKind.MOVIE })
-        assertEquals(1, catalogue.titles.count { it.kind == ContentKind.SERIES })
+        assertEquals(2, catalogue.titles.count { it.kind == ContentKind.CHANNEL })
+        assertTrue(catalogue.hasMore)
+        val second = (repository.loadPage(ContentKind.CHANNEL, null, 2) as ProviderResult.Success).value
+        val third = (repository.loadPage(ContentKind.CHANNEL, null, 3) as ProviderResult.Success).value
+        assertEquals(2, second.titles.size)
+        assertEquals(1, third.titles.size)
+        assertFalse(third.hasMore)
+        val movies = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value
+        val shows = (repository.loadPage(ContentKind.SERIES, null, 2) as ProviderResult.Success).value
+        assertEquals(2, movies.titles.count { it.kind == ContentKind.MOVIE })
+        assertEquals(1, shows.titles.count { it.kind == ContentKind.SERIES })
+        assertTrue(movies.categories.any { it.id == "*" && it.name == "All" })
         val guide = (repository.programmes("1") as ProviderResult.Success).value
         assertEquals(4, guide.size)
         assertTrue(guide.all { it.channelId == "1" && it.end > it.start })
-        val movie = catalogue.titles.first { it.kind == ContentKind.MOVIE }
-        assertEquals("mountain", movie.artworkKey)
+        val movie = movies.titles.first { it.kind == ContentKind.MOVIE }
+        assertEquals("http://10.0.2.2:8080/posters/mountain.png", movie.artworkKey)
         assertTrue((repository.resolve(movie.id) as ProviderResult.Success).value.uri.endsWith("/sample.mp4"))
-        val series = catalogue.titles.first { it.kind == ContentKind.SERIES }
+        val series = shows.titles.first { it.kind == ContentKind.SERIES }
         val seasons = (repository.seasons(series.id) as ProviderResult.Success).value
         assertEquals(2, seasons.size)
         assertEquals(2, seasons.first().episodes.size)

@@ -4,8 +4,9 @@ Native Android TV player for users connecting their own Stalker/Ministra IPTV pr
 
 The app starts on a landing page. Choose **Add playlist → Stalker Portal** to
 enter a host/IP, registered MAC and optional serial ID, validate the connection,
-and save an encrypted local playlist. A processed-playlist confirmation shows the
-channel count and lets you name the playlist before **Done** opens the TV guide. For Docker testing use host
+and save an encrypted local playlist. A processed-playlist confirmation lets you
+name the playlist before **Done** opens the TV guide; its first page is fetched
+only when the guide opens. Enter only a host (optionally with a scheme and port), not `/c/` or a `.php` path. The saved host remains unchanged; the app probes candidate API routes and uses one only after a valid handshake and profile response. It follows HTTP redirects supplied by the same server (including HTTP-to-HTTPS upgrades) without forwarding credentials to a different host. For Docker testing enter
 `http://10.0.2.2:8080`, MAC `00:1A:79:00:00:01` (see
 [mock portal](tools/mock-portal/README.md)); serial may be left blank. Saving or selecting a playlist connects
 and opens the guide with channel groups, time slots, and a video preview.
@@ -16,16 +17,26 @@ offline, the app offers retry or playlist management instead of opening the guid
 The left navigation keeps TV, Movies, Shows and Recordings together. The second
 column shows portal categories for the selected section; Movies and Shows use
 vertically scrolling poster grids on the right. The remote Back key moves from
-content to categories to navigation.
+content to categories to navigation. The main navigation collapses to an icon
+rail when focus moves away from it and expands again on return, including for TV.
 Docker serves the same sample MP4 for all five channels, not live TV.
 **Open offline demo** retains the original sample browsing experience.
 
-The connected guide loads programme information from the selected portal when
-available. Movies and Shows browse portal VOD titles, seasons, and episodes;
+The connected guide loads a channel's programme information when it is selected.
+Live TV and VOD fetch pages on demand. Movies and Shows share cached VOD pages;
+the next page is requested when the visible poster grid approaches its end.
+Movie and show categories are cached for the connection, and selecting an already
+loaded section does not re-fetch its page. Movies and Shows browse portal VOD titles, seasons, and episodes;
 movie and episode playback links resolve through the portal. The local mock
 supplies synthetic fixtures, not evidence of support for every real provider.
 Recordings and My list remain navigation placeholders, not functional DVR or
 favourites. The app uses its own branding and icons.
+
+The connected app uses Android's UI → ViewModel → repository pattern rather
+than web MVC. The application container shares OkHttp connection pools (with
+separate timeouts for handshake/profile calls); the portal repository owns
+session-scoped categories and title data. Protocol-specific redirect checks
+still prevent forwarding portal credentials to a different server.
 
 ## Build and run
 
@@ -46,6 +57,21 @@ For connected UI checks:
 ```
 
 The Gradle wrapper and dependency versions are pinned; the Gradle distribution is checksum-verified. First-time builds require internet access to Google Maven, Maven Central, and Gradle distribution hosting.
+
+### Debug portal diagnostics
+
+After retrying a connection in a **debug build**, read the app's diagnostic tag:
+
+```sh
+adb logcat -d -s StalkerPortal:D '*:S'
+```
+
+The tag reports allowlisted request type/action, HTTP status, elapsed time,
+response size, and the failing connection/storage stage or exception class.
+It does not log response bodies, redirect destinations, URLs, query parameters,
+tokens, or exception messages. Calls are guarded by `BuildConfig.DEBUG` and
+emit no `StalkerPortal` lines in release builds. Keep even summary logs private;
+unfiltered system logcat may also contain data from other apps.
 
 ## Try the demo
 

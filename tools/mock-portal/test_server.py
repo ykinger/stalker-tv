@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from server import MAC, Portal
+from server import MAC, PUBLIC_BASE_URL, Portal
 
 
 class MockPortalTest(unittest.TestCase):
@@ -75,12 +75,15 @@ class MockPortalTest(unittest.TestCase):
     def test_movies_series_seasons_episodes_and_links(self):
         token = self.login()
         categories = self.request("vod", "get_categories", token)[1]
-        self.assertEqual([row["id"] for row in categories], ["11", "21"])
+        self.assertEqual([row["id"] for row in categories], ["*", "11", "21"])
+        self.assertEqual([row["id"] for row in self.request("series", "get_categories", token)[1]], ["21"])
         first = self.request("vod", "get_ordered_list", token, category="*", p=1)[1]
         second = self.request("vod", "get_ordered_list", token, category="*", p=2)[1]
         self.assertEqual((first["total_items"], len(first["data"]), len(second["data"])), (3, 2, 1))
-        self.assertEqual(first["data"][0]["screenshot_uri"], "mountain")
         self.assertEqual(second["data"][0]["is_series"], 1)
+        self.assertEqual(first["data"][0]["screenshot_uri"], f"{PUBLIC_BASE_URL}/posters/mountain.png")
+        show = self.request("series", "get_ordered_list", token, category="0", p=1)[1]
+        self.assertEqual((show["total_items"], show["data"][0]["is_series"]), (1, 1))
         self.assertEqual(len(self.request("vod", "get_ordered_list", token, category="11")[1]["data"]), 2)
         self.assertEqual(len(self.request("vod", "get_ordered_list", token, category="21")[1]["data"]), 1)
         seasons = self.request("vod", "get_seasons", token, series_id="201")[1]["data"]
@@ -93,6 +96,15 @@ class MockPortalTest(unittest.TestCase):
             self.assertTrue(link["cmd"].endswith("/sample.mp4"))
         self.assertEqual(self.request("vod", "get_episodes", token, series_id="201", season_id="999")[0], 404)
         self.assertEqual(self.request("vod", "get_ordered_list", token, p=0)[0], 400)
+
+    def test_posters_are_real_public_pngs(self):
+        for name in ("mountain", "ocean", "orbit"):
+            with urlopen(f"http://127.0.0.1:{self.server.server_port}/posters/{name}.png") as response:
+                self.assertEqual(response.headers["Content-Type"], "image/png")
+                self.assertEqual(response.read(8), b"\x89PNG\r\n\x1a\n")
+        with self.assertRaises(HTTPError) as missing:
+            urlopen(f"http://127.0.0.1:{self.server.server_port}/posters/missing.png")
+        self.assertEqual(missing.exception.code, 404)
 
 
 if __name__ == "__main__":

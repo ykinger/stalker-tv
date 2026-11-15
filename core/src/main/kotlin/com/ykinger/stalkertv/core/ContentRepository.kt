@@ -32,7 +32,7 @@ data class Programme(
     val end: Instant,
 )
 
-data class Catalogue(val categories: List<Category>, val titles: List<Title>)
+data class Catalogue(val categories: List<Category>, val titles: List<Title>, val hasMore: Boolean = false)
 
 data class PlaybackSource(
     val uri: String,
@@ -60,4 +60,9 @@ interface ContentRepository {
     suspend fun programmes(channelId: String): ProviderResult<List<Programme>>
 
     suspend fun resolve(id: String): ProviderResult<PlaybackSource>
+}
+
+/** Optional on-demand browsing capability; the offline demo supplies a full catalogue. */
+interface PagedContentRepository : ContentRepository {
+    suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue>
 }
