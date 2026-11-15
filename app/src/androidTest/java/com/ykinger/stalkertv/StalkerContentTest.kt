@@ -41,8 +41,9 @@ class StalkerContentTest {
         val series = shows.titles.first { it.kind == ContentKind.SERIES }
         val seasons = (repository.seasons(series.id) as ProviderResult.Success).value
         assertEquals(2, seasons.size)
-        assertEquals(2, seasons.first().episodes.size)
-        val episode = seasons.first().episodes.first()
+        val firstEpisodes = (repository.episodes(series.id, seasons.first().id, 1) as ProviderResult.Success).value
+        assertEquals(2, firstEpisodes.episodes.size)
+        val episode = firstEpisodes.episodes.first()
         assertEquals(episode, (repository.details(episode.id) as ProviderResult.Success).value)
         assertTrue((repository.resolve(episode.id) as ProviderResult.Success).value.uri.endsWith("/sample.mp4"))
     }

@@ -24,6 +24,8 @@ data class Title(
 
 data class Season(val id: String, val seriesId: String, val number: Int, val episodes: List<Title>)
 
+data class EpisodePage(val episodes: List<Title>, val hasMore: Boolean = false)
+
 data class Programme(
     val id: String,
     val channelId: String,
@@ -56,6 +58,9 @@ interface ContentRepository {
     suspend fun details(id: String): ProviderResult<Title>
 
     suspend fun seasons(seriesId: String): ProviderResult<List<Season>>
+
+    suspend fun episodes(seriesId: String, seasonId: String, page: Int): ProviderResult<EpisodePage> =
+        ProviderResult.Unsupported
 
     suspend fun programmes(channelId: String): ProviderResult<List<Programme>>
 

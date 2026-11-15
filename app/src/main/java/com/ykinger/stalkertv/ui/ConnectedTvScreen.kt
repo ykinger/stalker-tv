@@ -14,7 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -81,6 +81,10 @@ internal fun nearVodEnd(lastVisible: Int, visibleItems: Int, columns: Int, poste
     posters > 0 && lastVisible >= 0 &&
         lastVisible >= posters - 1 - maxOf(columns * 2, visibleItems)
 
+internal fun vodGridLeftEdge(index: Int, columns: Int): Boolean = index >= 0 && index % maxOf(1, columns) == 0
+internal fun vodGridBottomEdge(index: Int, count: Int, columns: Int): Boolean =
+    index >= 0 && index + maxOf(1, columns) >= count
+
 /** The connected experience is guide-first; the offline sample catalogue remains separate. */
 @Composable
 internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () -> Unit) {
@@ -104,14 +108,23 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     var vodTitle by remember { mutableStateOf<Title?>(null) }
     var vodCategory by remember { mutableStateOf<String?>(null) }
     var seasons by remember { mutableStateOf<List<Season>>(emptyList()) }
+    var selectedSeason by remember { mutableStateOf<Season?>(null) }
+    var episodes by remember { mutableStateOf<List<Title>>(emptyList()) }
+    var episodePage by remember { mutableIntStateOf(0) }
+    var episodesHaveMore by remember { mutableStateOf(false) }
+    var episodeLoading by remember { mutableStateOf(false) }
+    var episodeError by remember { mutableStateOf<String?>(null) }
+    var episodeReload by remember { mutableIntStateOf(0) }
     var vodError by remember { mutableStateOf<String?>(null) }
     var vodLoading by remember { mutableStateOf(false) }
+    var returnToGroups by remember { mutableStateOf(false) }
     val guideFocus = remember { FocusRequester() }
     val groupsFocus = remember { FocusRequester() }
     val menuFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
 
     fun openSection(item: String) {
+        returnToGroups = false
         section = item
         vodTitle = null
         vodCategory = null
@@ -171,22 +184,66 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
     LaunchedEffect(vodTitle) {
         seasons = emptyList()
+        selectedSeason = null
         vodError = null
         val title = vodTitle ?: return@LaunchedEffect
         if (title.kind == ContentKind.SERIES) {
             vodLoading = true
             when (val result = model.repository.seasons(title.id)) {
                 is ProviderResult.Success -> seasons = result.value
-                is ProviderResult.Failure -> vodError = result.message
-                else -> vodError = "No episodes available."
+                is ProviderResult.Failure -> vodError = "Could not load seasons for this show. Try again later."
+                else -> vodError = "This portal did not provide seasons for this show."
             }
             vodLoading = false
+        }
+    }
+    LaunchedEffect(vodTitle, selectedSeason, episodeReload) {
+        episodes = emptyList()
+        episodePage = 0
+        episodesHaveMore = false
+        episodeError = null
+        episodeLoading = false
+        val title = vodTitle ?: return@LaunchedEffect
+        val season = selectedSeason ?: return@LaunchedEffect
+        episodeLoading = true
+        when (val result = model.repository.episodes(title.id, season.id, 1)) {
+            is ProviderResult.Success -> {
+                episodes = result.value.episodes
+                episodesHaveMore = result.value.hasMore
+                episodePage = 1
+            }
+            is ProviderResult.Failure -> episodeError = "Could not load episodes for this season. Try again."
+            else -> episodeError = "This portal did not provide episodes for this season."
+        }
+        episodeLoading = false
+    }
+
+    fun loadMoreEpisodes() {
+        val title = vodTitle ?: return
+        val season = selectedSeason ?: return
+        if (!episodesHaveMore || episodeLoading) return
+        episodeLoading = true
+        episodeError = null
+        val next = episodePage + 1
+        scope.launch {
+            val result = model.repository.episodes(title.id, season.id, next)
+            if (vodTitle?.id != title.id || selectedSeason?.id != season.id) return@launch
+            when (result) {
+                is ProviderResult.Success -> {
+                    episodes = (episodes + result.value.episodes).distinctBy { it.id }
+                    episodesHaveMore = result.value.hasMore
+                    episodePage = next
+                }
+                else -> episodeError = "Could not load more episodes. Please retry."
+            }
+            episodeLoading = false
         }
     }
 
     // A newly appended page changes state but must not steal focus from the item
     // the user is scrolling past. Only initial loading/section changes refocus.
     LaunchedEffect(area, section, state is LoadState.Ready, group, vodCategory, vodTitle, seasons, vodLoading,
+        selectedSeason, episodes.isNotEmpty(),
         (state as? LoadState.Ready<Catalogue>)?.value?.titles?.any {
             it.kind == (if (section == "Movies") ContentKind.MOVIE else ContentKind.SERIES) &&
                 (vodCategory == null || it.categoryId == vodCategory)
@@ -215,6 +272,16 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         try { target?.requestFocus() } catch (_: IllegalStateException) { }
     }
 
+    // Leaving a detail removes its focused button. Hand focus to the selected
+    // category after that button has left the composition, not to a menu icon.
+    LaunchedEffect(returnToGroups, vodTitle, area) {
+        if (returnToGroups && vodTitle == null && area == "groups") {
+            withFrameNanos { }
+            try { groupsFocus.requestFocus() } catch (_: IllegalStateException) { }
+            returnToGroups = false
+        }
+    }
+
     if (fullScreen && source != null) {
         SamplePlayer(source!!, demo = false) { fullScreen = false }
         return
@@ -224,7 +291,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         when (area) {
             "guide" -> area = "groups"
             "groups" -> area = "menu"
-            "content" -> if (vodTitle != null) vodTitle = null
+            "content" -> if (selectedSeason != null) selectedSeason = null
+                else if (vodTitle != null) {
+                    vodTitle = null; area = "groups"; returnToGroups = true
+                }
                 else area = if (section == "Movies" || section == "Shows") "groups" else "menu"
         }
     }
@@ -266,7 +336,8 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                 .padding(start = 10.dp, top = 192.dp, end = 10.dp).verticalScroll(rememberScrollState())) {
                 Text(section, color = Color.White, fontSize = 20.sp, modifier = Modifier.padding(12.dp))
                 GuideAction(allCategory?.name ?: "All $section", selected = vodCategory == null,
-                    modifier = Modifier.focusRequester(groupsFocus).onPreviewKeyEvent {
+                    modifier = Modifier.then(if (vodCategory == null) Modifier.focusRequester(groupsFocus) else Modifier)
+                        .onPreviewKeyEvent {
                         if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft) {
                             area = "menu"; true
                         } else false
@@ -277,7 +348,8 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     ?.filter { it.id != "*" && vodCategoryVisible(it, kind, loaded.value.titles) }
                     ?.forEach { category ->
                         GuideAction(category.name, selected = vodCategory == category.id,
-                            modifier = Modifier.onPreviewKeyEvent {
+                            modifier = Modifier.then(if (vodCategory == category.id) Modifier.focusRequester(groupsFocus) else Modifier)
+                                .onPreviewKeyEvent {
                                 if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft) {
                                     area = "menu"; true
                                 } else false
@@ -411,6 +483,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                         val gridState = key(section, vodCategory) { rememberLazyGridState() }
                         var lastAutoCount by remember(section, vodCategory) { mutableIntStateOf(-1) }
                         var autoFetchesAtCount by remember(section, vodCategory) { mutableIntStateOf(0) }
+                        var footerFocused by remember(section, vodCategory) { mutableStateOf(false) }
+                        var previousPosterCount by remember(section, vodCategory) { mutableIntStateOf(0) }
+                        var appendedFocusId by remember(section, vodCategory) { mutableStateOf<String?>(null) }
+                        val appendedFocus = remember(section, vodCategory) { FocusRequester() }
                         if (loaded == null) {
                             Text((state as? LoadState.Message)?.text ?: "Loading titles…", color = muted)
                             GuideAction("Retry", modifier = Modifier.focusRequester(guideFocus), onClick = model::refresh)
@@ -432,29 +508,55 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                     }
                                 }
                                 if (title.kind == ContentKind.SERIES) {
-                                    if (vodLoading) Text("Loading episodes…", color = muted)
+                                    if (vodLoading) Text("Loading seasons…", color = muted)
                                     vodError?.let { Text(it, color = muted) }
-                                    if (seasons.isNotEmpty()) {
-                                        var first = true
-                                        seasons.forEach { season ->
-                                            Text("Season ${season.number}", color = accent, fontSize = 20.sp)
-                                            season.episodes.forEach { episode ->
-                                                GuideAction(episode.name, modifier = if (first) Modifier.focusRequester(guideFocus) else Modifier) {
-                                                    playVod(episode)
-                                                }
-                                                first = false
+                                    if (selectedSeason == null) {
+                                        seasons.forEachIndexed { index, season ->
+                                            GuideAction("Season ${season.number}",
+                                                modifier = if (index == 0) Modifier.focusRequester(guideFocus) else Modifier) {
+                                                selectedSeason = season
                                             }
+                                        }
+                                    } else {
+                                        Text("Season ${selectedSeason!!.number}", color = accent, fontSize = 20.sp)
+                                        if (episodeLoading) Text("Loading episodes…", color = muted)
+                                        episodeError?.let { Text(it, color = muted) }
+                                        episodes.forEachIndexed { index, episode ->
+                                            GuideAction(episode.name,
+                                                modifier = if (index == 0) Modifier.focusRequester(guideFocus) else Modifier) {
+                                                playVod(episode)
+                                            }
+                                        }
+                                        if (episodesHaveMore && !episodeLoading)
+                                            GuideAction(if (episodeError == null) "Load more episodes" else "Retry episodes",
+                                                onClick = ::loadMoreEpisodes)
+                                        if (episodeError != null && episodePage == 0 && !episodeLoading)
+                                            GuideAction("Retry episodes") { episodeReload++ }
+                                        GuideAction("Back to seasons", modifier = if (episodes.isEmpty())
+                                            Modifier.focusRequester(guideFocus) else Modifier) {
+                                            selectedSeason = null
                                         }
                                     }
                                 }
-                                GuideAction("Back to $section", modifier = if (title.kind == ContentKind.SERIES &&
-                                    seasons.all { it.episodes.isEmpty() }) Modifier.focusRequester(guideFocus) else Modifier) {
-                                    vodTitle = null
-                                }
+                                if (selectedSeason == null)
+                                    GuideAction("Back to $section", modifier = if (title.kind == ContentKind.SERIES &&
+                                        seasons.isEmpty()) Modifier.focusRequester(guideFocus) else Modifier) {
+                                        vodTitle = null; area = "groups"; returnToGroups = true
+                                    }
                             }
                         } else {
                             val allTitles = loaded.value.titles.filter { it.kind == kind }
                             val titles = allTitles.filter { vodCategory == null || it.categoryId == vodCategory }
+                            LaunchedEffect(section, vodCategory, titles.size) {
+                                if (footerFocused && titles.size > previousPosterCount) {
+                                    val next = previousPosterCount
+                                    appendedFocusId = titles[next].id
+                                    gridState.scrollToItem(next)
+                                    withFrameNanos { }
+                                    try { appendedFocus.requestFocus() } catch (_: IllegalStateException) { }
+                                }
+                                previousPosterCount = titles.size
+                            }
                             val canPrefetch = loaded.value.hasMore && !loadingNext && !pageFailed &&
                                 (lastAutoCount != titles.size || autoFetchesAtCount < 2)
                             LaunchedEffect(section, vodCategory, titles.size, canPrefetch, gridState) {
@@ -482,8 +584,18 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                             }
                             if (titles.isEmpty()) {
                                 Text(if (loadingNext) "Loading more $section…" else "No $section on this page", color = muted)
-                                if (loaded.value.hasMore && !loadingNext)
-                                    GuideAction(if (pageFailed) "Retry" else "Load more", modifier = Modifier.focusRequester(guideFocus), onClick = model::loadNextPage)
+                                if (loaded.value.hasMore)
+                                    GuideAction(if (loadingNext) "Loading more…" else if (pageFailed) "Retry" else "Load more",
+                                        modifier = Modifier.focusRequester(guideFocus)
+                                            .onPreviewKeyEvent {
+                                                if (it.type != KeyEventType.KeyDown) false
+                                                else when (it.key) {
+                                                    Key.DirectionLeft -> { area = "groups"; true }
+                                                    Key.DirectionDown -> true
+                                                    else -> false
+                                                }
+                                            },
+                                        onClick = { if (!loadingNext) model.loadNextPage() })
                             }
                             else LazyVerticalGrid(
                                 columns = GridCells.Adaptive(130.dp),
@@ -493,19 +605,41 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                 horizontalArrangement = Arrangement.spacedBy(18.dp),
                                 verticalArrangement = Arrangement.spacedBy(18.dp),
                             ) {
-                                gridItems(titles, key = { it.id }) { title ->
+                                gridItemsIndexed(titles, key = { _, title -> title.id }) { index, title ->
+                                    val columns = maxOf(1, gridState.layoutInfo.maxSpan)
                                     PosterCard(title, Modifier.fillMaxWidth()
-                                        .then(if (title.id == titles.first().id) Modifier.focusRequester(guideFocus) else Modifier)
+                                        .then(if (index == 0) Modifier.focusRequester(guideFocus) else Modifier)
+                                        .then(if (title.id == appendedFocusId) Modifier.focusRequester(appendedFocus) else Modifier)
+                                        .onFocusChanged { if (it.isFocused) footerFocused = false }
                                         .onPreviewKeyEvent {
-                                            if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft &&
-                                                title.id == titles.first().id) { area = "groups"; true } else false
+                                            if (it.type != KeyEventType.KeyDown) false
+                                            else when (it.key) {
+                                                Key.DirectionLeft -> if (vodGridLeftEdge(index, columns)) {
+                                                    area = "groups"; true
+                                                } else false
+                                                Key.DirectionUp -> index < columns
+                                                Key.DirectionDown -> !loaded.value.hasMore &&
+                                                    vodGridBottomEdge(index, titles.size, columns)
+                                                else -> false
+                                            }
                                         }) { vodTitle = title }
                                 }
-                                if (loaded.value.hasMore) {
+                                if (loaded.value.hasMore || loadingNext || footerFocused) {
                                     item(key = "load-more") {
-                                        if (loadingNext) Text("Loading more…", color = muted)
-                                        else GuideAction(if (pageFailed) "Retry" else "Load more",
-                                            onClick = model::loadNextPage)
+                                        GuideAction(when {
+                                            loadingNext -> "Loading more…"
+                                            !loaded.value.hasMore -> "End of $section"
+                                            pageFailed -> "Retry"
+                                            else -> "Load more"
+                                        }, modifier = Modifier.onFocusChanged { footerFocused = it.isFocused }
+                                            .onPreviewKeyEvent {
+                                                if (it.type != KeyEventType.KeyDown) false
+                                                else when (it.key) {
+                                                    Key.DirectionLeft -> { area = "groups"; true }
+                                                    Key.DirectionDown -> true
+                                                    else -> false
+                                                }
+                                            }, onClick = { if (loaded.value.hasMore && !loadingNext) model.loadNextPage() })
                                     }
                                 }
                             }

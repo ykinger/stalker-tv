@@ -26,7 +26,8 @@ The connected guide loads a channel's programme information when it is selected.
 Live TV and VOD fetch pages on demand. Movies and Shows share cached VOD pages;
 the next page is requested when the visible poster grid approaches its end.
 Movie and show categories are cached for the connection, and selecting an already
-loaded section does not re-fetch its page. Movies and Shows browse portal VOD titles, seasons, and episodes;
+loaded section does not re-fetch its page. Movies and Shows browse portal VOD titles;
+selecting a show loads its seasons, and selecting a season loads its episodes on demand;
 movie and episode playback links resolve through the portal. The local mock
 supplies synthetic fixtures, not evidence of support for every real provider.
 Recordings and My list remain navigation placeholders, not functional DVR or

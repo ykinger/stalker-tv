@@ -77,8 +77,12 @@ internal class StalkerContentRepository(
                 row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }?.let { commands = commands + (id to it) }
                 val itemCategory = row.optString(if (kind == ContentKind.CHANNEL) "tv_genre_id" else "category_id")
                     .takeIf { it.isNotBlank() && it != "null" } ?: categoryId.orEmpty()
+                val artwork = listOf("pic", "screenshot_uri").firstNotNullOfOrNull { field ->
+                    row.optString(field).takeUnless { it.isBlank() || it in setOf("null", "0", "false") }
+                        ?.let { posterAddress(profile.host, it) }
+                }
                 Title(id, row.optString("name").ifBlank { "Title $rawId" }, itemKind, itemCategory,
-                    row.optString("description").ifBlank { null }, row.optString("screenshot_uri").ifBlank { null },
+                    row.optString("description").ifBlank { null }, artwork,
                     row.optString("year").toIntOrNull())
             }
             titles = (titles + pageTitles).distinctBy { it.id }
@@ -109,28 +113,56 @@ internal class StalkerContentRepository(
     override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = safely("catalogue.seasons") {
         if (titles.none { it.id == seriesId && it.kind == ContentKind.SERIES }) return@safely ProviderResult.Empty
         val rawId = seriesId.removePrefix("series:")
-        val rows = (portalRequest(profile, "type=vod&action=get_seasons&series_id=${URLEncoder.encode(rawId, "UTF-8")}", token, container) as JSONObject)
-            .getJSONArray("data")
-        val seasons = (0 until rows.length()).map { i ->
+        val seasons = mutableListOf<Season>()
+        for (page in 1..10) {
             currentCoroutineContext().ensureActive()
-            val row = rows.getJSONObject(i)
-            val seasonId = row.getString("id")
-            val episodes = (portalRequest(profile,
-                "type=vod&action=get_episodes&series_id=${URLEncoder.encode(rawId, "UTF-8")}&season_id=${URLEncoder.encode(seasonId, "UTF-8")}", token, container) as JSONObject)
-                .getJSONArray("data")
-            val episodeTitles = (0 until episodes.length()).map { index ->
-                val episode = episodes.getJSONObject(index)
-                val id = "episode:" + episode.getString("id")
-                val title = Title(id, episode.optString("name").ifBlank { "Episode ${episode.optInt("episode_number")}" },
-                    ContentKind.EPISODE, seasonId)
-                commands = commands + (id to episode.getString("cmd"))
-                titles = titles.filterNot { it.id == id } + title
-                title
+            // The series row's cmd is a media command, not a detail URL. Stalker
+            // exposes children through get_ordered_list with a parent movie_id.
+            val result = portalRequest(profile,
+                "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(rawId, "UTF-8")}" +
+                    "&season_id=0&episode_id=0&p=$page&JsHttpRequest=1-xml", token, container) as? JSONObject
+                ?: return@safely ProviderResult.Unsupported
+            val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                if (row.optInt("is_season") != 1 && !row.optBoolean("is_season")) continue
+                val id = row.optString("id").takeIf { it.isNotBlank() } ?: continue
+                seasons += Season(id, seriesId, row.optInt("season_number", seasons.size + 1), emptyList())
             }
-            Season(seasonId, seriesId, row.optInt("season_number"), episodeTitles)
+            val total = result.optInt("total_items", -1)
+            val size = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
+            if (rows.length() == 0 || (total >= 0 && page.toLong() * size >= total) ||
+                (total < 0 && rows.length() < size)) break
         }
         if (seasons.isEmpty()) ProviderResult.Empty else ProviderResult.Success(seasons)
     }
+
+    override suspend fun episodes(seriesId: String, seasonId: String, page: Int): ProviderResult<EpisodePage> =
+        safely("catalogue.episodes") {
+            if (page !in 1..250 || titles.none { it.id == seriesId && it.kind == ContentKind.SERIES })
+                return@safely ProviderResult.Empty
+            val rawId = URLEncoder.encode(seriesId.removePrefix("series:"), "UTF-8")
+            val rawSeason = URLEncoder.encode(seasonId, "UTF-8")
+            val result = portalRequest(profile,
+                "type=vod&action=get_ordered_list&movie_id=$rawId&season_id=$rawSeason" +
+                    "&episode_id=0&p=$page&JsHttpRequest=1-xml", token, container) as? JSONObject
+                ?: return@safely ProviderResult.Unsupported
+            val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
+            val items = (0 until rows.length()).mapNotNull { index ->
+                val row = rows.optJSONObject(index) ?: return@mapNotNull null
+                val rawEpisode = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val id = "episode:$rawEpisode"
+                row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }
+                    ?.let { commands = commands + (id to it) }
+                Title(id, row.optString("name").ifBlank { "Episode ${row.optInt("series_number", index + 1)}" },
+                    ContentKind.EPISODE, seasonId)
+            }
+            titles = (titles + items).distinctBy { it.id }
+            val total = result.optInt("total_items", -1)
+            val size = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
+            ProviderResult.Success(EpisodePage(items, rows.length() > 0 && page < 250 &&
+                (if (total >= 0) page.toLong() * size < total else rows.length() >= size)))
+        }
     override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = safely("guide.programmes") {
         if (titles.none { it.id == channelId && it.kind == ContentKind.CHANNEL }) return@safely ProviderResult.Empty
         val encodedId = URLEncoder.encode(channelId, "UTF-8")
@@ -151,3 +183,14 @@ internal class StalkerContentRepository(
         if (result.isEmpty()) ProviderResult.Empty else ProviderResult.Success(result)
     }
 }
+
+/** Resolve portal-relative artwork without treating media commands as image addresses. */
+internal fun posterAddress(apiHost: String, address: String): String? = try {
+    val base = URI(apiHost)
+    val resolved = base.resolve(address.trim())
+    resolved.toString().takeIf {
+        resolved.scheme in listOf("http", "https") && !resolved.host.isNullOrBlank() &&
+            resolved.userInfo == null && resolved.fragment == null &&
+            !(base.scheme == "https" && resolved.scheme == "http")
+    }
+} catch (_: IllegalArgumentException) { null }

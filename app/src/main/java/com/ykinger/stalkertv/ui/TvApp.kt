@@ -6,6 +6,7 @@
 package com.ykinger.stalkertv.ui
 
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -53,10 +54,12 @@ import com.ykinger.stalkertv.R
 import com.ykinger.stalkertv.core.*
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.net.HttpURLConnection
 import java.net.URI
+import okhttp3.Request
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private enum class Section(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
@@ -67,6 +70,10 @@ private enum class Section(val label: String, val icon: ImageVector) {
     SEARCH("Search", Icons.Default.Search),
     SETTINGS("Settings", Icons.Default.Settings),
 }
+
+private val posterCache = LruCache<String, ImageBitmap>(24)
+private val unavailablePosters = LruCache<String, Boolean>(24)
+private val posterLocks = Array(32) { Mutex() }
 
 @Composable
 fun TvApp(container: AppContainer, demo: Boolean = true, onProfileSettings: () -> Unit = {}) {
@@ -347,39 +354,7 @@ internal fun Artwork(title: Title, modifier: Modifier = Modifier) {
     val remote by produceState<ImageBitmap?>(null, title.artworkKey) {
         val address = title.artworkKey ?: return@produceState
         if (drawable != null) return@produceState
-        value = withContext(Dispatchers.IO) {
-            try {
-                val uri = URI(address)
-                if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null)
-                    return@withContext null
-                val connection = uri.toURL().openConnection() as HttpURLConnection
-                try {
-                    connection.connectTimeout = 5000
-                    connection.readTimeout = 5000
-                    connection.instanceFollowRedirects = false
-                    if (connection.responseCode != 200 ||
-                        !connection.contentType.orEmpty().startsWith("image/")) return@withContext null
-                    val data = connection.inputStream.use { input ->
-                        val output = java.io.ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        while (output.size() <= 2_000_000) {
-                            val count = input.read(buffer, 0, minOf(buffer.size, 2_000_001 - output.size()))
-                            if (count < 0) break
-                            output.write(buffer, 0, count)
-                        }
-                        output.toByteArray()
-                    }
-                    if (data.size > 2_000_000) return@withContext null
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
-                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
-                    val options = BitmapFactory.Options().apply {
-                        inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 512).coerceAtLeast(1)
-                    }
-                    BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
-                } finally { connection.disconnect() }
-            } catch (_: Exception) { null }
-        }
+        value = loadPoster(address)
     }
     Box(modifier.background(Color(0xFF303436)), contentAlignment = Alignment.Center) {
         if (drawable != null)
@@ -392,14 +367,68 @@ internal fun Artwork(title: Title, modifier: Modifier = Modifier) {
         else if (remote != null)
             Image(bitmap = remote!!, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize())
-        Text(
-            if (drawable == null && remote == null) title.name else title.name.uppercase(),
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
-            modifier = Modifier.padding(16.dp),
-        )
+        if (drawable == null && remote == null)
+            Text(title.name, fontSize = 19.sp, fontWeight = FontWeight.Bold,
+                color = Color.White, modifier = Modifier.padding(16.dp))
     }
+}
+
+/** Artwork requests are anonymous: never forward the portal token or device cookie to an image host. */
+private suspend fun loadPoster(address: String): ImageBitmap? = withContext(Dispatchers.IO) {
+    posterCache.get(address)?.let { return@withContext it }
+    if (unavailablePosters.get(address) == true) return@withContext null
+    posterLocks[(address.hashCode() and Int.MAX_VALUE) % posterLocks.size].withLock {
+        posterCache.get(address) ?: if (unavailablePosters.get(address) == true) null else fetchPoster(address)
+    }
+}
+
+private fun fetchPoster(address: String): ImageBitmap? {
+    try {
+        var uri = URI(address)
+        val visited = mutableSetOf<URI>()
+        repeat(5) {
+            if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null ||
+                !visited.add(uri)) return null
+            AppContainer().portalClient.newCall(Request.Builder().url(uri.toString()).build()).execute().use { response ->
+                if (response.code in setOf(301, 302, 303, 307, 308)) {
+                    val next = uri.resolve(response.header("Location") ?: return null)
+                    if (uri.scheme == "https" && next.scheme != "https") return null
+                    uri = next
+                    return@repeat
+                }
+                if (response.code in setOf(404, 410)) {
+                    unavailablePosters.put(address, true)
+                    return null
+                }
+                if (!response.isSuccessful) return null
+                val body = response.body ?: return null
+                if (body.contentLength() > 2_000_000) return null
+                val input = body.byteStream()
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (output.size() <= 2_000_000) {
+                    val count = input.read(buffer, 0, minOf(buffer.size, 2_000_001 - output.size()))
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                }
+                val data = output.toByteArray()
+                if (data.size > 2_000_000) return null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    unavailablePosters.put(address, true)
+                    return null
+                }
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 512).coerceAtLeast(1)
+                }
+                return BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
+                    ?.also { posterCache.put(address, it) }
+            }
+        }
+        return null
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+    catch (_: Exception) { return null }
 }
 
 @Composable

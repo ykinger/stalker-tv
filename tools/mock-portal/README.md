@@ -43,9 +43,10 @@ GET requests support `/server/load.php`, `/portal.php`, and
    and Demo Series (`21`). `get_ordered_list&category=*&p=1` returns the first
    two fictional movies; page 2 returns a fictional show with `is_series=1`.
    The older `type=series` route remains available for compatibility checks.
-9. `?type=vod&action=get_seasons&series_id=201` returns two seasons;
-    `get_episodes&series_id=201&season_id=301` returns the first season's episodes.
-    `type=series` also accepts these series queries as a fixture-specific alias.
+9. `?type=vod&action=get_ordered_list&movie_id=201&season_id=0&episode_id=0&p=1`
+   returns two seasons; using `season_id=301` returns the first season's episodes.
+   The older `get_seasons` / `get_episodes` fixture routes remain for compatibility
+   checks but are not used by the connected UI.
 10. `?type=vod&action=create_link&cmd=...` accepts only a returned movie or
     episode command and resolves it to the same sample MP4.
 

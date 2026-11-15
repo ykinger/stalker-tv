@@ -86,15 +86,19 @@ class MockPortalTest(unittest.TestCase):
         self.assertEqual((show["total_items"], show["data"][0]["is_series"]), (1, 1))
         self.assertEqual(len(self.request("vod", "get_ordered_list", token, category="11")[1]["data"]), 2)
         self.assertEqual(len(self.request("vod", "get_ordered_list", token, category="21")[1]["data"]), 1)
-        seasons = self.request("vod", "get_seasons", token, series_id="201")[1]["data"]
+        seasons = self.request("vod", "get_ordered_list", token,
+                               movie_id="201", season_id="0", episode_id="0", p=1)[1]["data"]
         self.assertEqual([row["season_number"] for row in seasons], [1, 2])
-        episodes = self.request("vod", "get_episodes", token, series_id="201", season_id="301")[1]["data"]
+        self.assertTrue(all(row["is_season"] for row in seasons))
+        episodes = self.request("vod", "get_ordered_list", token,
+                                movie_id="201", season_id="301", episode_id="0", p=1)[1]["data"]
         self.assertEqual(len(episodes), 2)
         for cmd in (first["data"][0]["cmd"], episodes[0]["cmd"]):
             status, link = self.request("vod", "create_link", token, cmd=cmd)
             self.assertEqual(status, 200)
             self.assertTrue(link["cmd"].endswith("/sample.mp4"))
-        self.assertEqual(self.request("vod", "get_episodes", token, series_id="201", season_id="999")[0], 404)
+        self.assertEqual(self.request("vod", "get_ordered_list", token,
+                                      movie_id="999", season_id="0", episode_id="0", p=1)[1], False)
         self.assertEqual(self.request("vod", "get_ordered_list", token, p=0)[0], 400)
 
     def test_posters_are_real_public_pngs(self):

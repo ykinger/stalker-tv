@@ -67,15 +67,15 @@ SERIES = [
      "screenshot_uri": f"{PUBLIC_BASE_URL}/posters/orbit.png"},
 ]
 SEASONS = [
-    {"id": "301", "series_id": "201", "season_number": 1, "name": "Season 1"},
-    {"id": "302", "series_id": "201", "season_number": 2, "name": "Season 2"},
+    {"id": "301", "video_id": "201", "is_season": True, "season_number": 1, "name": "Season 1"},
+    {"id": "302", "video_id": "201", "is_season": True, "season_number": 2, "name": "Season 2"},
 ]
 EPISODES = [
-    {"id": "401", "series_id": "201", "season_id": "301", "episode_number": 1,
+    {"id": "401", "series_id": "201", "season_id": "301", "is_episode": True, "episode_number": 1,
      "name": "A New Beginning", "cmd": "ffmpeg http://localhost/vod/episode/401"},
-    {"id": "402", "series_id": "201", "season_id": "301", "episode_number": 2,
+    {"id": "402", "series_id": "201", "season_id": "301", "is_episode": True, "episode_number": 2,
      "name": "The Next Step", "cmd": "ffmpeg http://localhost/vod/episode/402"},
-    {"id": "403", "series_id": "201", "season_id": "302", "episode_number": 1,
+    {"id": "403", "series_id": "201", "season_id": "302", "is_episode": True, "episode_number": 1,
      "name": "Another Chapter", "cmd": "ffmpeg http://localhost/vod/episode/403"},
 ]
 
@@ -231,6 +231,18 @@ class Portal(SimpleHTTPRequestHandler):
                            {"id": "21", "title": "Demo Series"}] if kind == "vod" else
                            [{"id": "21", "title": "Demo Series"}])
             return self.reply({"js": categories})
+        if kind == "vod" and action == "get_ordered_list" and "movie_id" in params:
+            if params["movie_id"][0] != "201":
+                return self.reply({"js": False})
+            season_id = params.get("season_id", ["0"])[0]
+            if season_id in ("0", ""):
+                selected = SEASONS
+            else:
+                selected = [row for row in EPISODES if row["season_id"] == season_id]
+            result = page_of(selected, params)
+            if result is None:
+                return self.reply({"js": {"error": "Invalid page"}}, 400)
+            return self.reply({"js": result})
         if kind in ("vod", "series") and action in ("get_ordered_list", "get_all_channels"):
             category = params.get("category", ["*"])[0]
             rows = MOVIES + SERIES if kind == "vod" else SERIES
