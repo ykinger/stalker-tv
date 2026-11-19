@@ -18,6 +18,8 @@ class VodCategoriesTest {
         assertFalse(visible("ENGLISH MOVIES | LATEST", ContentKind.SERIES))
         assertTrue(visible("ENGLISH MOVIES | LATEST", ContentKind.MOVIE))
         assertFalse(visible("DOCUMENTARIES | SERIES", ContentKind.MOVIE))
+        assertFalse(visible("ENGLISH | K-DRAMAS", ContentKind.MOVIE))
+        assertTrue(visible("ENGLISH | K-DRAMAS", ContentKind.SERIES))
     }
 
     @Test fun mixedAndAmbiguousNamesRemainAvailable() {

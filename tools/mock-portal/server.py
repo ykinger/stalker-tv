@@ -232,6 +232,13 @@ class Portal(SimpleHTTPRequestHandler):
                            [{"id": "21", "title": "Demo Series"}])
             return self.reply({"js": categories})
         if kind == "vod" and action == "get_ordered_list" and "movie_id" in params:
+            movie_id = params["movie_id"][0]
+            if movie_id in {row["id"] for row in MOVIES}:
+                return self.reply({"js": page_of([{
+                    "id": str(int(movie_id) + 400), "video_id": movie_id, "is_file": 1,
+                    "name": "Main file", "cmd": f"ffmpeg http://localhost/vod/file/{movie_id}",
+                    "path": f"storage/{movie_id}.mpg",
+                }], params)})
             if params["movie_id"][0] != "201":
                 return self.reply({"js": False})
             season_id = params.get("season_id", ["0"])[0]
@@ -268,7 +275,8 @@ class Portal(SimpleHTTPRequestHandler):
             return self.reply({"js": {"data": rows, "total_items": len(rows)}})
         if kind == "vod" and action == "create_link":
             cmd = params.get("cmd", [""])[0]
-            if cmd not in {row["cmd"] for row in MOVIES + EPISODES}:
+            if cmd not in ({row["cmd"] for row in MOVIES + EPISODES} |
+                           {f"/media/file_{int(row['id']) + 400}.mpg" for row in MOVIES}):
                 return self.reply({"js": {"error": "Unknown video"}}, 400)
             return self.reply({"js": {"cmd": f"ffmpeg {PUBLIC_BASE_URL}/sample.mp4"}})
         return self.reply({"js": {"error": "Unsupported mock action"}}, 400)

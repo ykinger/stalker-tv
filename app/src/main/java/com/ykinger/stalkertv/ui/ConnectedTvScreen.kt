@@ -4,6 +4,9 @@ import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.rememberScrollState
@@ -19,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.*
@@ -28,6 +32,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -68,6 +73,7 @@ import java.time.ZoneId
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 
 private val background = Color(0xFF101314)
@@ -107,6 +113,11 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     var programmes by remember { mutableStateOf<Map<String, List<Programme>>>(emptyMap()) }
     var vodTitle by remember { mutableStateOf<Title?>(null) }
     var vodCategory by remember { mutableStateOf<String?>(null) }
+    var movieSearch by remember { mutableStateOf("") }
+    var movieSearchOpen by remember { mutableStateOf(false) }
+    var movieSort by remember { mutableStateOf("added") }
+    var movieSortOpen by remember { mutableStateOf(false) }
+    var highlightedMovieId by remember { mutableStateOf<String?>(null) }
     var seasons by remember { mutableStateOf<List<Season>>(emptyList()) }
     var selectedSeason by remember { mutableStateOf<Season?>(null) }
     var episodes by remember { mutableStateOf<List<Title>>(emptyList()) }
@@ -122,12 +133,17 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     val groupsFocus = remember { FocusRequester() }
     val menuFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
+    val movieSearchFocus = remember { FocusRequester() }
+    val movieSortFocus = remember { FocusRequester() }
+    val sortButtonFocus = remember { FocusRequester() }
 
     fun openSection(item: String) {
         returnToGroups = false
         section = item
         vodTitle = null
         vodCategory = null
+        movieSearch = ""; movieSearchOpen = false; movieSortOpen = false
+        movieSort = "added"; highlightedMovieId = null
         source = null
         selectedId = null
         area = if (item == "TV" || item == "Movies" || item == "Shows") "groups" else "content"
@@ -173,6 +189,19 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             }
             if (selectedId == title.id) resolving = false
         }
+    }
+
+    fun openVodCategory(kind: ContentKind, category: String?) {
+        vodCategory = category; vodTitle = null; area = "content"
+        movieSearch = ""; movieSearchOpen = false; movieSortOpen = false
+        highlightedMovieId = null; movieSort = "added"
+        model.loadSection(kind, category, ordering = if (kind == ContentKind.MOVIE) movieSort else "")
+    }
+
+    LaunchedEffect(section, vodCategory, movieSearch, movieSort, area, vodTitle) {
+        if (section != "Movies" || area != "content" || vodTitle != null) return@LaunchedEffect
+        delay(350)
+        model.loadSection(ContentKind.MOVIE, vodCategory, query = movieSearch.trim(), ordering = movieSort)
     }
 
     LaunchedEffect(selectedId, section) {
@@ -286,8 +315,17 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         SamplePlayer(source!!, demo = false) { fullScreen = false }
         return
     }
+    val vodBrowsing = section == "Movies" && area == "content"
     val compactMenu = area != "menu"
     BackHandler(area != "menu") {
+        if (movieSortOpen) {
+            movieSortOpen = false
+            try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
+        } else if (movieSearchOpen) {
+            movieSearchOpen = false; movieSearch = ""
+            if (section == "Movies") model.loadSection(ContentKind.MOVIE, vodCategory, ordering = movieSort)
+            try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
+        } else
         when (area) {
             "guide" -> area = "groups"
             "groups" -> area = "menu"
@@ -298,7 +336,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                 else area = if (section == "Movies" || section == "Shows") "groups" else "menu"
         }
     }
-    Row(Modifier.fillMaxSize().background(background)) {
+    Box(Modifier.fillMaxSize().background(background)) {
+    Row(Modifier.fillMaxSize()) {
+        AnimatedVisibility(!vodBrowsing, enter = expandHorizontally(expandFrom = Alignment.Start),
+            exit = shrinkHorizontally(shrinkTowards = Alignment.Start)) {
         Column(Modifier.width(if (compactMenu) 68.dp else 190.dp).fillMaxHeight().background(panel)
             .padding(if (compactMenu) 8.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -327,11 +368,14 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                         })
                 }
             }
+        }
         if (section == "Movies" || section == "Shows") {
             val kind = if (section == "Movies") ContentKind.MOVIE else ContentKind.SERIES
             val loaded = state as? LoadState.Ready
             val titles = loaded?.value?.titles?.filter { it.kind == kind }.orEmpty()
             val allCategory = loaded?.value?.categories?.firstOrNull { it.id == "*" }
+            AnimatedVisibility(!vodBrowsing, enter = expandHorizontally(expandFrom = Alignment.Start),
+                exit = shrinkHorizontally(shrinkTowards = Alignment.Start)) {
             Column(Modifier.width(192.dp).fillMaxHeight().background(background)
                 .padding(start = 10.dp, top = 192.dp, end = 10.dp).verticalScroll(rememberScrollState())) {
                 Text(section, color = Color.White, fontSize = 20.sp, modifier = Modifier.padding(12.dp))
@@ -342,7 +386,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                             area = "menu"; true
                         } else false
                     }) {
-                        vodCategory = null; vodTitle = null; area = "content"; model.loadSection(kind)
+                        openVodCategory(kind, null)
                     }
                 loaded?.value?.categories
                     ?.filter { it.id != "*" && vodCategoryVisible(it, kind, loaded.value.titles) }
@@ -354,10 +398,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                     area = "menu"; true
                                 } else false
                             }) {
-                            vodCategory = category.id; vodTitle = null; area = "content"
-                            model.loadSection(kind, category.id)
+                            openVodCategory(kind, category.id)
                         }
                     }
+            }
             }
         }
         if (section == "TV") {
@@ -454,7 +498,33 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             }
         } else {
             Column(Modifier.weight(1f).fillMaxHeight().padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                Text(section, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                if (vodBrowsing) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        val categoryName = (state as? LoadState.Ready<Catalogue>)?.value?.categories
+                            ?.firstOrNull { it.id == vodCategory }?.name
+                        Text(categoryName ?: "All $section",
+                            fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White,
+                            modifier = Modifier.weight(1f))
+                        if (section == "Movies" && vodTitle == null) {
+                            if (movieSearchOpen) {
+                                BasicTextField(movieSearch, { movieSearch = it }, singleLine = true,
+                                    textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
+                                    modifier = Modifier.width(250.dp).focusRequester(movieSearchFocus)
+                                        .background(cell, RoundedCornerShape(6.dp)).padding(10.dp))
+                                LaunchedEffect(movieSearchOpen) {
+                                    try { movieSearchFocus.requestFocus() } catch (_: IllegalStateException) { }
+                                }
+                            }
+                            GuideAction("Search movies", modifier = Modifier.width(56.dp),
+                                icon = Icons.Default.Search, compact = true) {
+                                movieSortOpen = false; movieSearchOpen = !movieSearchOpen
+                                if (!movieSearchOpen) movieSearch = ""
+                            }
+                            GuideAction("Sort movies", modifier = Modifier.width(56.dp).focusRequester(sortButtonFocus),
+                                icon = Icons.Default.Menu, compact = true) { movieSortOpen = !movieSortOpen }
+                        }
+                    }
+                } else Text(section, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 when (section) {
                     "Settings" -> {
                         GuideAction("Playlists", modifier = Modifier.focusRequester(guideFocus), onClick = onManagePlaylists)
@@ -480,13 +550,13 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                         val kind = if (section == "Movies") ContentKind.MOVIE else ContentKind.SERIES
                         val loadingNext by model.loadingNext.collectAsStateWithLifecycle()
                         val pageFailed by model.pageFailed.collectAsStateWithLifecycle()
-                        val gridState = key(section, vodCategory) { rememberLazyGridState() }
-                        var lastAutoCount by remember(section, vodCategory) { mutableIntStateOf(-1) }
-                        var autoFetchesAtCount by remember(section, vodCategory) { mutableIntStateOf(0) }
-                        var footerFocused by remember(section, vodCategory) { mutableStateOf(false) }
-                        var previousPosterCount by remember(section, vodCategory) { mutableIntStateOf(0) }
-                        var appendedFocusId by remember(section, vodCategory) { mutableStateOf<String?>(null) }
-                        val appendedFocus = remember(section, vodCategory) { FocusRequester() }
+                        val gridState = key(section, vodCategory, movieSearch, movieSort) { rememberLazyGridState() }
+                        var lastAutoCount by remember(section, vodCategory, movieSearch, movieSort) { mutableIntStateOf(-1) }
+                        var autoFetchesAtCount by remember(section, vodCategory, movieSearch, movieSort) { mutableIntStateOf(0) }
+                        var footerFocused by remember(section, vodCategory, movieSearch, movieSort) { mutableStateOf(false) }
+                        var previousPosterCount by remember(section, vodCategory, movieSearch, movieSort) { mutableIntStateOf(0) }
+                        var appendedFocusId by remember(section, vodCategory, movieSearch, movieSort) { mutableStateOf<String?>(null) }
+                        val appendedFocus = remember(section, vodCategory, movieSearch, movieSort) { FocusRequester() }
                         if (loaded == null) {
                             Text((state as? LoadState.Message)?.text ?: "Loading titles…", color = muted)
                             GuideAction("Retry", modifier = Modifier.focusRequester(guideFocus), onClick = model::refresh)
@@ -547,6 +617,31 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                         } else {
                             val allTitles = loaded.value.titles.filter { it.kind == kind }
                             val titles = allTitles.filter { vodCategory == null || it.categoryId == vodCategory }
+                            val otherKindOnly = vodCategory != null && titles.isEmpty() &&
+                                loaded.value.titles.any { it.categoryId == vodCategory && it.kind != kind }
+                            val highlighted = titles.firstOrNull { it.id == highlightedMovieId } ?: titles.firstOrNull()
+                            if (vodBrowsing && highlighted != null) {
+                                Box(Modifier.fillMaxWidth().height(270.dp)) {
+                                    Artwork(highlighted, Modifier.fillMaxSize())
+                                    Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(
+                                        0f to background, 0.55f to background.copy(alpha = 0.80f),
+                                        1f to Color.Transparent)))
+                                    Column(Modifier.align(Alignment.TopStart).fillMaxWidth(0.62f).padding(18.dp),
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Text(highlighted.name, fontSize = 30.sp, fontWeight = FontWeight.Bold,
+                                            color = Color.White, maxLines = 2)
+                                        highlighted.year?.let { Text("$it", fontSize = 17.sp, color = muted) }
+                                        highlighted.description?.let {
+                                            Text(it, color = muted, fontSize = 16.sp, maxLines = 5)
+                                        }
+                                    }
+                                }
+                            }
+                            if (vodBrowsing) {
+                                Text("${if (vodCategory == null) "All $section" else
+                                    loaded.value.categories.firstOrNull { it.id == vodCategory }?.name ?: section}  |  ${titles.size} loaded",
+                                    color = Color.White, fontSize = 19.sp)
+                            }
                             LaunchedEffect(section, vodCategory, titles.size) {
                                 if (footerFocused && titles.size > previousPosterCount) {
                                     val next = previousPosterCount
@@ -557,7 +652,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                 }
                                 previousPosterCount = titles.size
                             }
-                            val canPrefetch = loaded.value.hasMore && !loadingNext && !pageFailed &&
+                            val canPrefetch = !otherKindOnly && loaded.value.hasMore && !loadingNext && !pageFailed &&
                                 (lastAutoCount != titles.size || autoFetchesAtCount < 2)
                             LaunchedEffect(section, vodCategory, titles.size, canPrefetch, gridState) {
                                 if (lastAutoCount != titles.size) {
@@ -583,7 +678,12 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                 }
                             }
                             if (titles.isEmpty()) {
-                                Text(if (loadingNext) "Loading more $section…" else "No $section on this page", color = muted)
+                                Text(when {
+                                    loadingNext -> "Loading more $section…"
+                                    otherKindOnly -> "This page contains shows, not movies. Try Shows or load another page."
+                                    movieSearch.isNotBlank() -> "No matching movies"
+                                    else -> "No $section on this page"
+                                }, color = muted)
                                 if (loaded.value.hasMore)
                                     GuideAction(if (loadingNext) "Loading more…" else if (pageFailed) "Retry" else "Load more",
                                         modifier = Modifier.focusRequester(guideFocus)
@@ -610,14 +710,19 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                     PosterCard(title, Modifier.fillMaxWidth()
                                         .then(if (index == 0) Modifier.focusRequester(guideFocus) else Modifier)
                                         .then(if (title.id == appendedFocusId) Modifier.focusRequester(appendedFocus) else Modifier)
-                                        .onFocusChanged { if (it.isFocused) footerFocused = false }
+                                        .onFocusChanged { if (it.isFocused) {
+                                            footerFocused = false; highlightedMovieId = title.id
+                                        } }
                                         .onPreviewKeyEvent {
                                             if (it.type != KeyEventType.KeyDown) false
                                             else when (it.key) {
                                                 Key.DirectionLeft -> if (vodGridLeftEdge(index, columns)) {
                                                     area = "groups"; true
                                                 } else false
-                                                Key.DirectionUp -> index < columns
+                                                    Key.DirectionUp -> if (index < columns && section == "Movies") {
+                                                        try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
+                                                        true
+                                                    } else index < columns
                                                 Key.DirectionDown -> !loaded.value.hasMore &&
                                                     vodGridBottomEdge(index, titles.size, columns)
                                                 else -> false
@@ -649,6 +754,38 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                 }
             }
         }
+    }
+    if (section == "Movies" && vodBrowsing && vodTitle == null && movieSortOpen) {
+        BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
+            Column(Modifier.width(maxWidth * 0.20f).fillMaxHeight()
+                .onPreviewKeyEvent {
+                    if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft) {
+                        movieSortOpen = false
+                        try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
+                        true
+                    } else false
+                }
+                .background(panel)
+                .padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Sort movies", color = Color.White, fontSize = 22.sp,
+                    modifier = Modifier.padding(bottom = 18.dp))
+                listOf("added" to "Last added", "rating" to "Rating", "name" to "Name")
+                    .forEachIndexed { index, (value, label) ->
+                        GuideAction("${if (movieSort == value) "◉" else "○"}  $label",
+                            selected = movieSort == value,
+                            modifier = if (index == 0) Modifier.focusRequester(movieSortFocus) else Modifier) {
+                            movieSort = value; highlightedMovieId = null; movieSortOpen = false
+                            model.loadSection(ContentKind.MOVIE, vodCategory,
+                                query = movieSearch.trim(), ordering = movieSort)
+                            try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
+                        }
+                    }
+            }
+        }
+        LaunchedEffect(movieSortOpen) {
+            try { movieSortFocus.requestFocus() } catch (_: IllegalStateException) { }
+        }
+    }
     }
 }
 

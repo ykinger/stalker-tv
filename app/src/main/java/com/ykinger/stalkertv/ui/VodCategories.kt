@@ -5,7 +5,7 @@ import com.ykinger.stalkertv.core.ContentKind
 import com.ykinger.stalkertv.core.Title
 
 private val movieLabel = Regex("\\b(?:movies?|films?)\\b", RegexOption.IGNORE_CASE)
-private val showLabel = Regex("\\b(?:tv[\\s-]*shows?|shows|series|serials?)\\b", RegexOption.IGNORE_CASE)
+private val showLabel = Regex("\\b(?:tv[\\s-]*shows?|shows|series|serials?|k[\\s-]*dramas?)\\b", RegexOption.IGNORE_CASE)
 
 /** Category metadata has no type field. Only exclude names exclusive to the other section. */
 internal fun vodCategoryVisible(category: Category, kind: ContentKind, loadedTitles: List<Title>): Boolean {

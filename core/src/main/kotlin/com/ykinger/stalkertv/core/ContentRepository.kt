@@ -70,4 +70,9 @@ interface ContentRepository {
 /** Optional on-demand browsing capability; the offline demo supplies a full catalogue. */
 interface PagedContentRepository : ContentRepository {
     suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue>
+
+    /** Optional server-side VOD filtering; implementations without it retain ordinary browsing. */
+    suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int,
+        search: String, sort: String): ProviderResult<Catalogue> =
+        loadPage(kind, categoryId, page)
 }

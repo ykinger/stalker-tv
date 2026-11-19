@@ -20,6 +20,12 @@ class PortalDiscoveryTest {
             portalApiCandidates("https://example.test/stalker_portal/c/"))
     }
 
+    @Test fun rootBrowserEntryPointIsTriedBeforeDiscoveredRoutes() {
+        assertEquals(listOf("http://example.test/c", "http://example.test/stalker_portal/server/load.php",
+            "http://example.test/portal.php", "http://example.test/server/load.php"),
+            portalApiCandidates("http://example.test/c"))
+    }
+
     @Test fun explicitEndpointIsNotReplaced() {
         assertEquals(listOf("http://10.0.2.2:8080/server/load.php"),
             portalApiCandidates("http://10.0.2.2:8080/server/load.php"))

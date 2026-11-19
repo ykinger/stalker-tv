@@ -1,8 +1,15 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+val localSettings = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+fun buildString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 android {
     namespace = "com.ykinger.stalkertv"
     compileSdk = 35
@@ -13,6 +20,20 @@ android {
         versionCode = 1
         versionName = "0.1.0-mock"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        listOf("HOST", "MAC", "SERIAL", "ADID", "RANDOM", "HW_VERSION_2", "HANDSHAKE_PREHASH", "PROFILE_PREHASH")
+            .forEach { buildConfigField("String", "CAPTURED_$it", buildString("")) }
+    }
+    buildTypes {
+        getByName("debug") {
+            mapOf(
+                "HOST" to "host", "MAC" to "mac", "SERIAL" to "serial", "ADID" to "adid",
+                "RANDOM" to "random", "HW_VERSION_2" to "hw_version_2",
+                "HANDSHAKE_PREHASH" to "handshake_prehash", "PROFILE_PREHASH" to "profile_prehash"
+            ).forEach { (field, property) ->
+                buildConfigField("String", "CAPTURED_$field",
+                    buildString(localSettings.getProperty("tivimate.$property", "")))
+            }
+        }
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
@@ -36,6 +57,7 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.okhttp)
     implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.ui)
     debugImplementation(libs.compose.tooling)
     debugImplementation(libs.compose.test.manifest)

@@ -19,6 +19,6 @@ internal fun portalApiCandidates(address: String): List<String> {
         listOf("/stalker_portal/server/load.php", "/portal.php", "/server/load.php")
     else listOf("$base/portal.php", "$base/server/load.php",
         "/portal.php", "/server/load.php", "/stalker_portal/server/load.php")
-    return (if (base.isBlank()) listOf(origin + routes.first(), address) + routes.drop(1).map { origin + it }
+    return (if (path.isBlank()) listOf(origin + routes.first(), address) + routes.drop(1).map { origin + it }
         else listOf(address) + routes.map { origin + it }).distinct()
 }

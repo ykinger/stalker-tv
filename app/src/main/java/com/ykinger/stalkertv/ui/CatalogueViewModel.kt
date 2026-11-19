@@ -34,9 +34,10 @@ fun <T> ProviderResult<T>.toLoadState(): LoadState<T> =
 class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
     private data class LoadedPage(val catalogue: Catalogue, val page: Int)
     // Movies and Shows are two views over the same VOD pages.
-    private fun pageKey(section: ContentKind, category: String?) =
-        (if (section == ContentKind.SERIES) ContentKind.MOVIE else section) to category
-    private val loadedPages = mutableMapOf<Pair<ContentKind, String?>, LoadedPage>()
+    private data class PageKey(val kind: ContentKind, val category: String?, val search: String, val sort: String)
+    private fun pageKey(section: ContentKind, category: String?, search: String, sort: String) =
+        PageKey(if (section == ContentKind.SERIES) ContentKind.MOVIE else section, category, search, sort)
+    private val loadedPages = mutableMapOf<PageKey, LoadedPage>()
     private val _scenario = MutableStateFlow(MockScenario.SUCCESS)
     val scenario = _scenario.asStateFlow()
     private val _state = MutableStateFlow<LoadState<Catalogue>>(LoadState.Loading)
@@ -51,6 +52,8 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
     val vodKinds = _vodKinds.asStateFlow()
     private var kind = ContentKind.CHANNEL
     private var categoryId: String? = null
+    private var search = ""
+    private var sort = ""
     private var page = 1
     val repository: ContentRepository
         get() = container.repository(_scenario.value)
@@ -70,13 +73,13 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
         _loadingNext.value = false
         _pageFailed.value = false
         page = 1
-        loadedPages.remove(pageKey(kind, categoryId))
+        loadedPages.remove(pageKey(kind, categoryId, search, sort))
         request =
             viewModelScope.launch {
                 _state.value = LoadState.Loading
                 val source = repository
                 _state.value = if (source is PagedContentRepository) {
-                    val result = source.loadPage(kind, categoryId, 1)
+                    val result = source.loadPage(kind, categoryId, 1, search, sort)
                     if (kind != ContentKind.CHANNEL && categoryId == null &&
                         result is ProviderResult.Success && !result.value.hasMore)
                         _vodKinds.value = result.value.titles.map { it.kind }.toSet()
@@ -85,16 +88,19 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
             }
     }
 
-    fun loadSection(section: ContentKind, category: String? = null, force: Boolean = false) {
+    fun loadSection(section: ContentKind, category: String? = null, force: Boolean = false,
+        query: String = "", ordering: String = "") {
         if (repository !is PagedContentRepository) return
-        if (!force && kind == section && categoryId == category &&
+        if (!force && kind == section && categoryId == category && search == query && sort == ordering &&
             (_state.value is LoadState.Ready || request?.isActive == true)) return
         (_state.value as? LoadState.Ready)?.value?.let {
-            loadedPages[pageKey(kind, categoryId)] = LoadedPage(it, page)
+            loadedPages[pageKey(kind, categoryId, search, sort)] = LoadedPage(it, page)
         }
         kind = section
         categoryId = category
-        val cached = if (force) null else loadedPages[pageKey(section, category)]
+        search = query
+        sort = ordering
+        val cached = if (force) null else loadedPages[pageKey(section, category, search, sort)]
         if (cached == null) refresh()
         else {
             request?.cancel()
@@ -115,7 +121,7 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
         _pageFailed.value = false
         nextPage = viewModelScope.launch {
             try {
-                when (val result = source.loadPage(kind, categoryId, next)) {
+                when (val result = source.loadPage(kind, categoryId, next, search, sort)) {
                     is ProviderResult.Success -> {
                         val latest = (_state.value as? LoadState.Ready)?.value ?: return@launch
                         val incoming = result.value

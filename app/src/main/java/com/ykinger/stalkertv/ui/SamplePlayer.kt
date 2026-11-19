@@ -1,5 +1,6 @@
 package com.ykinger.stalkertv.ui
 
+import android.util.Log
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -16,12 +17,16 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
 import com.ykinger.stalkertv.R
+import com.ykinger.stalkertv.BuildConfig
 import com.ykinger.stalkertv.core.PlaybackSource
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -34,7 +39,15 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
     val player =
         remember(context, source) {
             val http = DefaultHttpDataSource.Factory().setDefaultRequestProperties(source.headers)
-            val mediaSource = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http))
+            // Media3 otherwise overrides configured Accept-Encoding with identity.
+            // Allow gzip for HLS manifests only; keep segment/range requests unchanged.
+            val streamHttp = if (source.headers["Accept-Encoding"] == "gzip")
+                ResolvingDataSource.Factory(http, ResolvingDataSource.Resolver { spec ->
+                    if (spec.uri.path?.endsWith(".m3u8", ignoreCase = true) == true)
+                        spec.buildUpon().setFlags(spec.flags or DataSpec.FLAG_ALLOW_GZIP).build()
+                    else spec
+                }) else http
+            val mediaSource = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, streamHttp))
             ExoPlayer.Builder(context).setMediaSourceFactory(mediaSource).build().apply {
                 setMediaItem(MediaItem.fromUri(source.uri))
                 prepare()
@@ -43,9 +56,30 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
     DisposableEffect(player) {
         val listener =
             object : Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    playing = isPlaying
+                    if (BuildConfig.DEBUG && !demo)
+                        Log.d(PORTAL_TAG, "stage=playback.player playing=$isPlaying")
+                }
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (BuildConfig.DEBUG && !demo) Log.d(PORTAL_TAG,
+                        "stage=playback.player state=${when (playbackState) {
+                            Player.STATE_IDLE -> "idle"
+                            Player.STATE_BUFFERING -> "buffering"
+                            Player.STATE_READY -> "ready"
+                            Player.STATE_ENDED -> "ended"
+                            else -> "other"
+                        }}")
+                }
                 override fun onPlayerError(playbackError: PlaybackException) {
                     error = true
+                    if (BuildConfig.DEBUG && !demo) {
+                        val cause = playbackError.cause
+                        val status = (cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+                        Log.w(PORTAL_TAG, "stage=playback.player failure=${playbackError.errorCodeName} " +
+                            "cause=${cause?.javaClass?.simpleName ?: "none"} " +
+                            "http=${status ?: "none"}")
+                    }
                 }
             }
         player.addListener(listener)

@@ -41,8 +41,13 @@ internal class StalkerContentRepository(
 
     /** Fetch only the currently visible section/category/page; navigation requests the rest. */
     override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> =
+        loadPage(kind, categoryId, page, "", "")
+
+    override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int,
+        search: String, sort: String): ProviderResult<Catalogue> =
         safely("catalogue.${kind.name.lowercase()}") {
             require(page in 1..250)
+            require(sort in setOf("", "added", "rating", "name"))
             val type = when (kind) {
                 ContentKind.CHANNEL -> "itv"
                 ContentKind.MOVIE, ContentKind.SERIES -> "vod"
@@ -62,9 +67,19 @@ internal class StalkerContentRepository(
             if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=catalogue.$type page=$page categories=${categories.size}")
             val category = URLEncoder.encode(categoryId ?: "*", "UTF-8")
             val filter = if (kind == ContentKind.CHANNEL) "genre" else "category"
-            val extras = if (kind == ContentKind.CHANNEL) "&sortby=number&fav=0&search=" else ""
-            val result = portalRequest(profile,
-                "type=$type&action=get_ordered_list&$filter=$category&p=$page$extras&JsHttpRequest=1-xml", token, container) as JSONObject
+            val extras = if (kind == ContentKind.CHANNEL) "&sortby=number&fav=0&search=" else
+                (if (sort.isBlank()) "" else "&sortby=$sort") +
+                    (if (search.isBlank()) "" else "&search=${URLEncoder.encode(search.trim(), "UTF-8")}")
+            val response = portalRequest(profile,
+                "type=$type&action=get_ordered_list&$filter=$category&p=$page$extras&JsHttpRequest=1-xml", token, container)
+            // Some portals return js:[] for an empty page instead of an object
+            // containing data:[]. Keep the categories so users can select one.
+            if (response is JSONArray && response.length() == 0) {
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                    "stage=catalogue.$type page=$page result=emptyArray categorySelected=${categoryId != null}")
+                return@safely ProviderResult.Success(Catalogue(categories, emptyList(), false))
+            }
+            val result = response as? JSONObject ?: return@safely ProviderResult.Unsupported
             val rows = result.optJSONArray("data") ?: error("Portal page has no data array.")
             val pageTitles = (0 until rows.length()).mapNotNull { index ->
                 val row = rows.optJSONObject(index) ?: return@mapNotNull null
@@ -96,17 +111,61 @@ internal class StalkerContentRepository(
         }
 
     override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = safely("playback.resolve") {
-        val command = commands[id] ?: return@safely ProviderResult.Empty
+        val catalogueCommand = commands[id] ?: run {
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=playback.resolve source=missing")
+            return@safely ProviderResult.Empty
+        }
         val type = if (id.startsWith("movie:") || id.startsWith("episode:")) "vod" else "itv"
-        val result = portalRequest(profile, "type=$type&action=create_link&cmd=${URLEncoder.encode(command, "UTF-8")}" +
-            "&series=0&forced_storage=undefined&disable_ad=0&download=0&JsHttpRequest=1-xml", token, container) as JSONObject
-        val raw = result.getString("cmd").trim()
-        val url = if (raw.startsWith("ffmpeg ")) raw.removePrefix("ffmpeg ").trim() else raw
-        val uri = URI(url)
-        check(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null)
-        // Do not forward portal tokens to arbitrary stream hosts. Provider-specific
-        // playback headers will be added only after their requirements are verified.
-        ProviderResult.Success(PlaybackSource(url, titles.first { it.id == id }.name))
+        val movie = id.startsWith("movie:")
+        val fileCommand = if (movie) try {
+            val movieId = id.removePrefix("movie:")
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                "stage=vod.movie_detail request=selectedMovie action=get_ordered_list")
+            val detail = portalRequest(profile,
+                "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(movieId, "UTF-8")}",
+                token, container)
+            movieFileLinkCommand(detail, movieId).also {
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                    "stage=vod.movie_detail fileCommandFound=${it != null}")
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG,
+                "stage=vod.movie_detail failure=${error.javaClass.simpleName}")
+            null
+        } else null
+        // Never use the file row's direct URL or storage path as a stream URL.
+        val command = fileCommand ?: catalogueCommand
+        // Keep the episode/TV request shapes unchanged.
+        val series = if (id.startsWith("episode:")) 1 else 0
+        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            "stage=playback.resolve source=${mediaCommandForm(command)} type=$type " +
+                "fileCommand=${fileCommand != null} track=${if (movie) "omitted" else series}")
+        val query = "type=$type&action=create_link&cmd=${URLEncoder.encode(command, "UTF-8")}" +
+            if (movie) "&force_ch_link_check=0" else
+                "&series=$series&forced_storage=undefined&disable_ad=0&download=0&JsHttpRequest=1-xml"
+        val result = portalRequest(profile, query, token, container) as JSONObject
+        val raw = result.optString("cmd")
+        val url = playbackAddress(raw, profile.host) ?: run {
+            val portalError = result.opt("error")
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                "stage=playback.resolve link=unsupported hasCmd=${result.has("cmd")} " +
+                    "cmdType=${when (result.opt("cmd")) {
+                        null, JSONObject.NULL -> "null"
+                        is String -> "string"
+                        else -> "other"
+                    }} form=${mediaCommandForm(raw)} errorType=${jsonValueType(portalError)} " +
+                    "errorKind=${portalErrorKind(portalError)} hasUrl=${result.has("url")} " +
+                    "hasLink=${result.has("link")} hasStream=${result.has("stream_url")}")
+            return@safely ProviderResult.Unsupported
+        }
+        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=playback.resolve link=accepted type=$type")
+        // The working movie player sends no portal token, MAC cookie or Referer
+        // to the media host. Only its observed media identity is used here.
+        ProviderResult.Success(PlaybackSource(url, titles.first { it.id == id }.name,
+            if (movie) mapOf("User-Agent" to "Lavf53.32.100", "Connection" to "Keep-Alive",
+                "Accept-Encoding" to "gzip") else emptyMap()))
     }
     override suspend fun details(id: String): ProviderResult<Title> =
         titles.find { it.id == id }?.let { ProviderResult.Success(it) } ?: ProviderResult.Empty
@@ -148,18 +207,21 @@ internal class StalkerContentRepository(
                     "&episode_id=0&p=$page&JsHttpRequest=1-xml", token, container) as? JSONObject
                 ?: return@safely ProviderResult.Unsupported
             val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
+            var playableCommands = 0
             val items = (0 until rows.length()).mapNotNull { index ->
                 val row = rows.optJSONObject(index) ?: return@mapNotNull null
                 val rawEpisode = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val id = "episode:$rawEpisode"
                 row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }
-                    ?.let { commands = commands + (id to it) }
+                    ?.let { commands = commands + (id to it); playableCommands++ }
                 Title(id, row.optString("name").ifBlank { "Episode ${row.optInt("series_number", index + 1)}" },
                     ContentKind.EPISODE, seasonId)
             }
             titles = (titles + items).distinctBy { it.id }
             val total = result.optInt("total_items", -1)
             val size = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                "stage=catalogue.episodes page=$page rows=${rows.length()} commands=$playableCommands")
             ProviderResult.Success(EpisodePage(items, rows.length() > 0 && page < 250 &&
                 (if (total >= 0) page.toLong() * size < total else rows.length() >= size)))
         }
@@ -184,6 +246,18 @@ internal class StalkerContentRepository(
     }
 }
 
+/** Two observed successful requests used /media/file_<file row ID>.mpg as a create_link command. */
+internal fun movieFileLinkCommand(detail: Any?, movieId: String): String? {
+    val rows = (detail as? JSONObject)?.optJSONArray("data") ?: return null
+    val files = (0 until rows.length()).mapNotNull { index ->
+        val row = rows.optJSONObject(index) ?: return@mapNotNull null
+        if (row.optInt("is_file") != 1 && !row.optBoolean("is_file")) return@mapNotNull null
+        if (row.optString("video_id") != movieId) return@mapNotNull null
+        row.optString("id").takeIf { it.matches(Regex("[0-9]{1,20}")) }
+    }.distinct()
+    return files.singleOrNull()?.let { "/media/file_$it.mpg" }
+}
+
 /** Resolve portal-relative artwork without treating media commands as image addresses. */
 internal fun posterAddress(apiHost: String, address: String): String? = try {
     val base = URI(apiHost)
@@ -193,4 +267,60 @@ internal fun posterAddress(apiHost: String, address: String): String? = try {
             resolved.userInfo == null && resolved.fragment == null &&
             !(base.scheme == "https" && resolved.scheme == "http")
     }
-} catch (_: IllegalArgumentException) { null }
+} catch (_: Exception) { null }
+
+/** The portal may return a full stream URL or a server-relative media path. */
+internal fun playbackAddress(command: String, apiHost: String): String? = try {
+    val raw = command.trim().let {
+        when {
+            it.startsWith("ffmpeg ") -> it.removePrefix("ffmpeg ").trim()
+            it.startsWith("auto ") -> it.removePrefix("auto ").trim()
+            else -> it
+        }
+    }
+    val parsed = URI(raw)
+    val base = URI(apiHost)
+    val uri = if (parsed.isAbsolute) parsed else {
+        if (!raw.startsWith("/") && (!raw.contains('/') || raw.startsWith("../"))) return null
+        base.resolve(parsed)
+    }
+    uri.toString().takeIf {
+        uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null &&
+            uri.fragment == null && (parsed.isAbsolute || base.scheme != "https" || uri.scheme == "https")
+    }
+} catch (_: Exception) { null }
+
+private fun mediaCommandForm(command: String): String = when {
+    command.isBlank() || command == "null" -> "missing"
+    command.startsWith("http://") || command.startsWith("https://") -> "absolute"
+    command.startsWith("/") -> "relative"
+    command.startsWith("ffmpeg ") || command.startsWith("auto ") -> "prefixed"
+    else -> "other"
+}
+
+private fun jsonValueType(value: Any?): String = when (value) {
+    null, JSONObject.NULL -> "missing"
+    is String -> "string"
+    is Number -> "number"
+    is Boolean -> "boolean"
+    is JSONObject -> "object"
+    is JSONArray -> "array"
+    else -> "other"
+}
+
+/** Fixed labels only: portal error messages may include credentials or media URLs. */
+internal fun portalErrorKind(value: Any?): String {
+    if (value == null || value == JSONObject.NULL) return "none"
+    if (value !is String) return "nonText"
+    val error = value.lowercase()
+    return when {
+        "not found" in error || "not exist" in error -> "notFound"
+        "access" in error || "permission" in error || "denied" in error -> "access"
+        "expire" in error || "session" in error || "token" in error -> "session"
+        "limit" in error || "too many" in error -> "limit"
+        "storage" in error -> "storage"
+        "file" in error -> "file"
+        "unavailable" in error || "not available" in error -> "unavailable"
+        else -> "other"
+    }
+}

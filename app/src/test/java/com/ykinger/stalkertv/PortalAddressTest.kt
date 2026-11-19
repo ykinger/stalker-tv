@@ -12,15 +12,16 @@ class PortalAddressTest {
         assertEquals("https://example.test:8443", endpoint("https://example.test:8443"))
     }
 
-    @Test fun rejectsPortalPathsInUserInput() {
-        for (path in listOf("/portal.php", "/server/load.php", "/c/", "/stalker_portal/c/", "/")) {
-            assertThrows(IllegalArgumentException::class.java) { endpoint("http://example.test$path") }
+    @Test fun acceptsAndPreservesPortalPathsInUserInput() {
+        for (path in listOf("/portal.php", "/server/load.php", "/c", "/c/", "/stalker_portal/c/", "/")) {
+            assertEquals("http://example.test$path", endpoint("http://example.test$path"))
         }
     }
 
     @Test fun rejectsCredentialsAndQueryParametersInTheAddress() {
         assertThrows(IllegalArgumentException::class.java) { endpoint("http://user:pass@example.test") }
         assertThrows(IllegalArgumentException::class.java) { endpoint("http://example.test?token=private") }
+        assertThrows(IllegalArgumentException::class.java) { endpoint("http://example.test/c#fragment") }
         assertThrows(IllegalArgumentException::class.java) { endpoint("ftp://example.test") }
     }
 }
