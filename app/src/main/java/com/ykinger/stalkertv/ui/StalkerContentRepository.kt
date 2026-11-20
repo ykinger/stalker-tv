@@ -107,7 +107,7 @@ internal class StalkerContentRepository(
                 (if (total >= 0) page.toLong() * pageSize < total else rows.length() >= pageSize)
             if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
                 "stage=catalogue.$type page=$page rows=${rows.length()} titles=${pageTitles.size} total=$total hasMore=$hasMore")
-            ProviderResult.Success(Catalogue(categories, pageTitles, hasMore))
+            ProviderResult.Success(Catalogue(categories, pageTitles, hasMore, total.takeIf { it >= 0 }))
         }
 
     override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = safely("playback.resolve") {
@@ -214,8 +214,12 @@ internal class StalkerContentRepository(
                 val id = "episode:$rawEpisode"
                 row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }
                     ?.let { commands = commands + (id to it); playableCommands++ }
+                val artwork = listOf("pic", "screenshot_uri").firstNotNullOfOrNull { field ->
+                    row.optString(field).takeUnless { it.isBlank() || it in setOf("null", "0", "false") }
+                        ?.let { posterAddress(profile.host, it) }
+                }
                 Title(id, row.optString("name").ifBlank { "Episode ${row.optInt("series_number", index + 1)}" },
-                    ContentKind.EPISODE, seasonId)
+                    ContentKind.EPISODE, seasonId, artworkKey = artwork)
             }
             titles = (titles + items).distinctBy { it.id }
             val total = result.optInt("total_items", -1)

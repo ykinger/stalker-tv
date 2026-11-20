@@ -34,7 +34,8 @@ data class Programme(
     val end: Instant,
 )
 
-data class Catalogue(val categories: List<Category>, val titles: List<Title>, val hasMore: Boolean = false)
+data class Catalogue(val categories: List<Category>, val titles: List<Title>, val hasMore: Boolean = false,
+    val totalItems: Int? = null)
 
 data class PlaybackSource(
     val uri: String,

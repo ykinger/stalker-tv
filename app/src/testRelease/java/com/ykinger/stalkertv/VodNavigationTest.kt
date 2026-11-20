@@ -1,23 +1,18 @@
 package com.ykinger.stalkertv
 
-import com.ykinger.stalkertv.ui.vodGridBottomEdge
-import com.ykinger.stalkertv.ui.vodGridLeftEdge
+import com.ykinger.stalkertv.ui.nearVodEnd
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VodNavigationTest {
-    @Test fun leftMovesToCategoriesOnlyFromFirstColumn() {
-        assertTrue(vodGridLeftEdge(0, 4))
-        assertTrue(vodGridLeftEdge(8, 4))
-        assertFalse(vodGridLeftEdge(9, 4))
-        assertFalse(vodGridLeftEdge(-1, 4))
+    @Test fun horizontalRowFetchesMoreOnlyNearItsEnd() {
+        assertFalse(nearVodEnd(3, 4, 1, 20))
+        assertTrue(nearVodEnd(17, 4, 1, 20))
+        assertFalse(nearVodEnd(-1, 0, 1, 20))
     }
 
-    @Test fun bottomStopsAtLastPosterRowWhenThereIsNoNextPage() {
-        assertFalse(vodGridBottomEdge(7, 14, 4))
-        assertTrue(vodGridBottomEdge(10, 14, 4))
-        assertTrue(vodGridBottomEdge(13, 14, 4))
-        assertFalse(vodGridBottomEdge(-1, 14, 4))
+    @Test fun emptyRowDoesNotFetchAnotherPage() {
+        assertFalse(nearVodEnd(0, 1, 1, 0))
     }
 }

@@ -39,6 +39,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -328,15 +330,20 @@ private fun CatalogueContent(
 }
 
 @Composable
-internal fun PosterCard(title: Title, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = modifier, scale = CardDefaults.scale(focusedScale = 1.04f)) {
+internal fun PosterCard(title: Title, modifier: Modifier = Modifier, showDetails: Boolean = true,
+    onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = modifier.then(if (showDetails) Modifier else
+        Modifier.semantics { contentDescription = title.name }),
+        scale = CardDefaults.scale(focusedScale = 1.04f)) {
         Column {
             Artwork(title, Modifier.fillMaxWidth().aspectRatio(if (title.kind == ContentKind.CHANNEL) 2.3f else 0.70f))
-            Column(Modifier.padding(10.dp)) {
-                Text(title.name, maxLines = 2, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                Text(if (title.kind == ContentKind.CHANNEL) "View guide & watch"
-                    else "${title.year ?: ""}  •  ${title.kind.name.lowercase()}",
-                    fontSize = 10.sp, color = Color(0xFFABB0B3))
+            if (showDetails) {
+                Column(Modifier.padding(10.dp)) {
+                    Text(title.name, maxLines = 2, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(if (title.kind == ContentKind.CHANNEL) "View guide & watch"
+                        else "${title.year ?: ""}  •  ${title.kind.name.lowercase()}",
+                        fontSize = 10.sp, color = Color(0xFFABB0B3))
+                }
             }
         }
     }

@@ -1,7 +1,11 @@
 package com.ykinger.stalkertv.ui
 
 import android.util.Log
+import android.content.Context
+import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -23,6 +27,7 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.DefaultTimeBar
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
 import com.ykinger.stalkertv.R
@@ -120,7 +125,7 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
             AndroidView(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 factory = { viewContext ->
-                    PlayerView(viewContext).apply {
+                    RemotePlayerView(viewContext).apply {
                         id = R.id.sample_player
                         layoutParams =
                             ViewGroup.LayoutParams(
@@ -131,12 +136,114 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
                         useController = true
                         controllerAutoShow = true
                         setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-                        requestFocus()
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        // AndroidView is not attached yet in factory. Focus the player after
+                        // attachment; its visibility listener restores focus when controls hide.
+                        post {
+                            if (isAttachedToWindow && !isControllerFullyVisible) requestFocus()
+                        }
                     }
                 },
                 update = { it.player = player },
                 onRelease = { it.player = null },
             )
         }
+    }
+}
+
+/** TV remote shortcuts on the focused player surface. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+private class RemotePlayerView(context: Context) : PlayerView(context) {
+    private val focusLogger = ViewTreeObserver.OnGlobalFocusChangeListener { old, new ->
+        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            "stage=playback.remote focus=${focusTarget(old)}->${focusTarget(new)}")
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (BuildConfig.DEBUG) viewTreeObserver.addOnGlobalFocusChangeListener(focusLogger)
+        findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
+            isFocusable = true
+            setKeyTimeIncrement(10_000L)
+        }
+        if (isControllerFullyVisible) {
+            findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+        } else {
+            requestFocus()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        if (BuildConfig.DEBUG) viewTreeObserver.removeOnGlobalFocusChangeListener(focusLogger)
+        super.onDetachedFromWindow()
+    }
+
+    init {
+        setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+            val visible = visibility == View.VISIBLE
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                "stage=playback.remote controls=${if (visible) "visible" else "hidden"} " +
+                    "focus=${focusTarget(findFocus())}")
+            if (isAttachedToWindow) {
+                if (visible) {
+                    // Focus Play/Pause before the newly visible controller is drawn.
+                    findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+                } else {
+                    // A hidden controller cannot handle D-pad input. Return it to the
+                    // player surface so the next arrow can reveal the controls again.
+                    requestFocus()
+                }
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                    "stage=playback.remote focus_restored=${focusTarget(findFocus())}")
+            }
+        })
+    }
+
+    private fun focusTarget(focused: View?): String = when (focused) {
+        this -> "player"
+        null -> "none"
+        findViewById<View>(androidx.media3.ui.R.id.exo_play_pause) -> "play_pause"
+        findViewById<View>(androidx.media3.ui.R.id.exo_progress) -> "progress"
+        findViewById<View>(androidx.media3.ui.R.id.exo_prev) -> "previous"
+        findViewById<View>(androidx.media3.ui.R.id.exo_next) -> "next"
+        findViewById<View>(androidx.media3.ui.R.id.exo_settings) -> "settings"
+        else -> "other"
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val playback = player ?: return super.dispatchKeyEvent(event)
+        val key = event.keyCode
+        val seek = key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT
+        val reveal = key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
+        val toggle = key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER
+        if (!seek && !reveal && !toggle) return super.dispatchKeyEvent(event)
+        // Visible controls own their D-pad and OK events. In particular, let
+        // DefaultTimeBar seek and let each focused Media3 button handle OK.
+        if (isControllerFullyVisible && findFocus() !== this) {
+            if (BuildConfig.DEBUG && event.action == KeyEvent.ACTION_DOWN) Log.d(PORTAL_TAG,
+                "stage=playback.remote key=controller focus=${focusTarget(findFocus())}")
+            return super.dispatchKeyEvent(event)
+        }
+        if (isControllerFullyVisible && !toggle) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                "stage=playback.remote key=${when {
+                    seek -> if (key == KeyEvent.KEYCODE_DPAD_LEFT) "left" else "right"
+                    reveal -> if (key == KeyEvent.KEYCODE_DPAD_UP) "up" else "down"
+                    else -> "select"
+                }} controls=${isControllerFullyVisible} focus=${focusTarget(findFocus())} " +
+                    "seekable=${playback.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)}")
+            when {
+                seek -> if (playback.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) {
+                    val offset = if (key == KeyEvent.KEYCODE_DPAD_RIGHT) 10_000L else -10_000L
+                    val position = (playback.currentPosition + offset).coerceAtLeast(0L)
+                    playback.seekTo(if (playback.duration > 0) position.coerceAtMost(playback.duration) else position)
+                }
+                toggle -> if (playback.playWhenReady) playback.pause() else playback.play()
+            }
+            showController()
+        }
+        return true
     }
 }

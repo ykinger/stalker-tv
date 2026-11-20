@@ -74,9 +74,9 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
         _pageFailed.value = false
         page = 1
         loadedPages.remove(pageKey(kind, categoryId, search, sort))
+        _state.value = LoadState.Loading
         request =
             viewModelScope.launch {
-                _state.value = LoadState.Loading
                 val source = repository
                 _state.value = if (source is PagedContentRepository) {
                     val result = source.loadPage(kind, categoryId, 1, search, sort)

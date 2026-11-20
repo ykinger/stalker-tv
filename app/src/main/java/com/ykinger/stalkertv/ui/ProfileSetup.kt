@@ -838,6 +838,7 @@ private fun ProfileField(label: String, value: String, enabled: Boolean, modifie
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(editing) {
         if (editing) {
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=keyboard_request")
             editorFocus.requestFocus()
             keyboard?.show()
         }
@@ -848,22 +849,36 @@ private fun ProfileField(label: String, value: String, enabled: Boolean, modifie
             returnAfterEditing = false
         }
     }
-    BackHandler(editing) { editing = false; returnAfterEditing = true; keyboard?.hide() }
+    BackHandler(editing) {
+        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=back")
+        editing = false; returnAfterEditing = true; keyboard?.hide()
+    }
     Text(label, color = settingsMuted)
     Box(modifier.fillMaxWidth().focusRequester(fieldFocus)
         .onFocusChanged {
             focused = it.hasFocus
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                "stage=profile.input field=$label event=field_focus active=${it.hasFocus} editing=$editing")
             if (!it.hasFocus) editing = false
         }
         .semantics { contentDescription = "Edit $label" }
-        .clickable(enabled = enabled) { editing = true }
+        .clickable(enabled = enabled) {
+            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=activate")
+            editing = true
+        }
         .background(if (focused) Color(0xFFE0E3E4) else Color(0xFF292E31),
             androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
         .padding(16.dp)) {
         if (editing) {
-            BasicTextField(value = value, onValueChange = onChange, enabled = enabled,
+            BasicTextField(value = value, onValueChange = {
+                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=text_change")
+                onChange(it)
+            }, enabled = enabled,
                 singleLine = true, textStyle = TextStyle(color = Color.Black),
-                modifier = Modifier.fillMaxWidth().focusRequester(editorFocus))
+                modifier = Modifier.fillMaxWidth().focusRequester(editorFocus).onFocusChanged {
+                    if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                        "stage=profile.input field=$label event=editor_focus active=${it.isFocused}")
+                })
         } else {
             Text(value.ifBlank { "Press OK to edit" },
                 color = if (focused) Color.Black else if (value.isBlank()) settingsMuted else Color.White)

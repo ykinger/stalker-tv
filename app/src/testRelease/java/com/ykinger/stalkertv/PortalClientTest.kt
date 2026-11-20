@@ -115,6 +115,7 @@ class PortalClientTest {
             assertEquals(1, page.categories.size)
             assertEquals(emptyList<Any>(), page.titles)
             assertEquals(false, page.hasMore)
+            assertEquals(null, page.totalItems)
         } finally { server.shutdown() }
     }
 
@@ -125,8 +126,9 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[],"total_items":0}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            StalkerContentRepository(profile, "demo-token")
-                .loadPage(ContentKind.MOVIE, "42", 1, "space hero", "rating")
+            val page = (StalkerContentRepository(profile, "demo-token")
+                .loadPage(ContentKind.MOVIE, "42", 1, "space hero", "rating") as ProviderResult.Success).value
+            assertEquals(0, page.totalItems)
             server.takeRequest()
             val query = server.takeRequest().requestUrl!!
             assertEquals("42", query.queryParameter("category"))
@@ -134,6 +136,22 @@ class PortalClientTest {
             assertEquals("space hero", query.queryParameter("search"))
             assertEquals("rating", query.queryParameter("sortby"))
             assertEquals(2, server.requestCount)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun movieCategoryPageCarriesReportedVodTotal() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Movies"}]}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"First","category_id":"42"}],"max_page_items":1,"total_items":"200"}}"""))
+            val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
+            val page = (StalkerContentRepository(profile, "demo-token")
+                .loadPage(ContentKind.MOVIE, "42", 1) as ProviderResult.Success).value
+            assertEquals(200, page.totalItems)
+            assertEquals(true, page.hasMore)
+            assertEquals("get_categories", server.takeRequest().requestUrl?.queryParameter("action"))
+            assertEquals("42", server.takeRequest().requestUrl?.queryParameter("category"))
         } finally { server.shutdown() }
     }
 
@@ -454,7 +472,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"*","title":"All"}]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Example Show","is_series":1,"cmd":"/media/201.mpg","series":[]}],"total_items":1}}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"301","name":"Season 1","is_season":true,"season_number":1}],"total_items":1}}"""))
-            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"401","name":"First Episode","cmd":"/media/401.mpg","is_episode":true}],"total_items":2,"max_page_items":1}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"401","name":"First Episode","cmd":"/media/401.mpg","is_episode":true,"pic":"/posters/401.jpg"}],"total_items":2,"max_page_items":1}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
             val repository = StalkerContentRepository(profile, "demo-token")
             val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
@@ -463,6 +481,7 @@ class PortalClientTest {
             assertEquals(0, seasons.single().episodes.size)
             val episodes = (repository.episodes(show.id, seasons.single().id, 1) as ProviderResult.Success).value
             assertEquals("First Episode", episodes.episodes.single().name)
+            assertEquals(server.url("/posters/401.jpg").toString(), episodes.episodes.single().artworkKey)
             assertEquals(true, episodes.hasMore)
             assertEquals(4, server.requestCount)
             server.takeRequest() // categories
