@@ -24,10 +24,10 @@ fun <T> ProviderResult<T>.toLoadState(): LoadState<T> =
         is ProviderResult.Success -> LoadState.Ready(value)
         ProviderResult.Empty ->
             LoadState.Message(
-                "Nothing here yet. Try another section or change the mock scenario in Settings."
+                "Nothing here yet. Try another section."
             )
         ProviderResult.Unsupported ->
-            LoadState.Message("This content is unavailable in the selected mock scenario.")
+            LoadState.Message("This content is unavailable.")
         is ProviderResult.Failure -> LoadState.Message(message)
     }
 
@@ -39,12 +39,11 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
         PageKey(section, category, search, sort)
     private val loadedPages = mutableMapOf<PageKey, LoadedPage>()
     private var displayedPage: Pair<PageKey, Catalogue>? = null
-    private val _scenario = MutableStateFlow(MockScenario.SUCCESS)
-    val scenario = _scenario.asStateFlow()
     private val _state = MutableStateFlow<LoadState<Catalogue>>(LoadState.Loading)
     val state = _state.asStateFlow()
     private var request: Job? = null
     private var nextPage: Job? = null
+    private var requestVersion = 0L
     private val _loadingNext = MutableStateFlow(false)
     val loadingNext = _loadingNext.asStateFlow()
     private val _pageFailed = MutableStateFlow(false)
@@ -57,43 +56,45 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
     private var sort = ""
     private var page = 1
     val repository: ContentRepository
-        get() = container.repository(_scenario.value)
+        get() = container.repository
 
     /** A category change may compose before the new StateFlow value reaches the screen. */
     fun displaysPage(section: ContentKind, category: String?, query: String, ordering: String,
         catalogue: Catalogue): Boolean = repository !is PagedContentRepository ||
-        displayedPage?.let { it.first == pageKey(section, category, query, ordering) && it.second === catalogue } == true
+        displayedPage?.first == pageKey(section, category, query, ordering)
 
     init {
-        refresh()
-    }
-
-    fun setScenario(value: MockScenario) {
-        _scenario.value = value
         refresh()
     }
 
     fun refresh() {
         request?.cancel()
         nextPage?.cancel()
+        val version = ++requestVersion
         _loadingNext.value = false
         _pageFailed.value = false
         page = 1
         loadedPages.remove(pageKey(kind, categoryId, search, sort))
         displayedPage = null
         _state.value = LoadState.Loading
+        val requested = pageKey(kind, categoryId, search, sort)
         request =
             viewModelScope.launch {
                 val source = repository
-                _state.value = if (source is PagedContentRepository) {
-                    val result = source.loadPage(kind, categoryId, 1, search, sort)
-                    if (kind != ContentKind.CHANNEL && categoryId == null &&
+                val loaded = if (source is PagedContentRepository) {
+                    val result = source.loadPage(requested.kind, requested.category, 1,
+                        requested.search, requested.sort)
+                    if (version != requestVersion || requested != pageKey(kind, categoryId, search, sort))
+                        return@launch
+                    if (requested.kind != ContentKind.CHANNEL && requested.category == null &&
                         result is ProviderResult.Success && !result.value.hasMore)
                         _vodKinds.value = result.value.titles.map { it.kind }.toSet()
                     if (result is ProviderResult.Success)
-                        displayedPage = pageKey(kind, categoryId, search, sort) to result.value
+                        displayedPage = requested to result.value
                     result.toLoadState()
                 } else source.catalogue().toLoadState()
+                if (version == requestVersion && requested == pageKey(kind, categoryId, search, sort))
+                    _state.value = loaded
             }
     }
 
@@ -119,6 +120,7 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
         else {
             request?.cancel()
             nextPage?.cancel()
+            requestVersion++
             _loadingNext.value = false
             _pageFailed.value = false
             page = cached.page
@@ -132,12 +134,17 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
         val current = (_state.value as? LoadState.Ready)?.value ?: return
         if (!current.hasMore || _loadingNext.value) return
         val next = page + 1
+        val version = requestVersion
+        val requested = pageKey(kind, categoryId, search, sort)
         _loadingNext.value = true
         _pageFailed.value = false
         nextPage = viewModelScope.launch {
             try {
-                when (val result = source.loadPage(kind, categoryId, next, search, sort)) {
+                when (val result = source.loadPage(requested.kind, requested.category, next,
+                    requested.search, requested.sort)) {
                     is ProviderResult.Success -> {
+                        if (version != requestVersion || requested != pageKey(kind, categoryId, search, sort))
+                            return@launch
                         val latest = (_state.value as? LoadState.Ready)?.value ?: return@launch
                         val incoming = result.value
                         val merged = (latest.titles + incoming.titles).distinctBy { it.id }
@@ -145,23 +152,30 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
                             // An unfiltered All page can contain only the other
                             // VOD kind. Keep paging even when this page adds no rows.
                             hasMore = incoming.hasMore)
-                        displayedPage = pageKey(kind, categoryId, search, sort) to updated
+                        displayedPage = requested to updated
                         _state.value = LoadState.Ready(updated)
-                        if (kind != ContentKind.CHANNEL && categoryId == null && !incoming.hasMore)
+                        if (requested.kind != ContentKind.CHANNEL && requested.category == null && !incoming.hasMore)
                             _vodKinds.value = merged.map { it.kind }.toSet()
                         page = next
                     }
                     is ProviderResult.Failure -> {
+                        if (version != requestVersion || requested != pageKey(kind, categoryId, search, sort))
+                            return@launch
                         _pageFailed.value = true
                         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=catalogue.page failed=true page=$next")
                     }
                     else -> {
+                        if (version != requestVersion || requested != pageKey(kind, categoryId, search, sort))
+                            return@launch
                         val updated = current.copy(hasMore = false)
-                        displayedPage = pageKey(kind, categoryId, search, sort) to updated
+                        displayedPage = requested to updated
                         _state.value = LoadState.Ready(updated)
                     }
                 }
-            } finally { _loadingNext.value = false }
+            } finally {
+                if (version == requestVersion && requested == pageKey(kind, categoryId, search, sort))
+                    _loadingNext.value = false
+            }
         }
     }
 }

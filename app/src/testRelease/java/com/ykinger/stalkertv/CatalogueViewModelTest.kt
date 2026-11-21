@@ -4,6 +4,9 @@ import com.ykinger.stalkertv.core.*
 import com.ykinger.stalkertv.ui.CatalogueViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -65,6 +68,38 @@ class CatalogueViewModelTest {
         model.loadNextPage()
         assertEquals(listOf(1, 2, 3), pages)
         assertEquals(listOf("Found Show"),
+            (model.state.value as com.ykinger.stalkertv.ui.LoadState.Ready).value.titles.map { it.name })
+    }
+
+    @Test fun staleAllShowsResponseCannotReplaceSelectedCategory() {
+        val releaseAll = CompletableDeferred<Unit>()
+        val repository = object : PagedContentRepository {
+            override suspend fun catalogue(): ProviderResult<Catalogue> = ProviderResult.Unsupported
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> {
+                if (kind == ContentKind.CHANNEL)
+                    return ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+                if (kind == ContentKind.SERIES && categoryId == null) {
+                    withContext(NonCancellable) { releaseAll.await() }
+                    return ProviderResult.Success(Catalogue(emptyList(), listOf(
+                        Title("series:all", "Stale All Show", ContentKind.SERIES, "all"))))
+                }
+                return ProviderResult.Success(Catalogue(emptyList(), listOf(
+                    Title("series:drama", "Drama Show", ContentKind.SERIES, "drama"))))
+            }
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        val model = CatalogueViewModel(AppContainer(repository))
+
+        model.loadSection(ContentKind.SERIES)
+        model.loadSection(ContentKind.SERIES, "drama")
+        assertEquals(listOf("Drama Show"),
+            (model.state.value as com.ykinger.stalkertv.ui.LoadState.Ready).value.titles.map { it.name })
+
+        releaseAll.complete(Unit)
+        assertEquals(listOf("Drama Show"),
             (model.state.value as com.ykinger.stalkertv.ui.LoadState.Ready).value.titles.map { it.name })
     }
 }

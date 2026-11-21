@@ -36,7 +36,7 @@ import com.ykinger.stalkertv.core.PlaybackSource
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, live: Boolean = false, onBack: () -> Unit) {
+fun SamplePlayer(source: PlaybackSource, live: Boolean = false, onBack: () -> Unit) {
     val context = LocalContext.current
     var error by remember(source) { mutableStateOf(false) }
     var resumePlayback by remember(source) { mutableStateOf(true) }
@@ -61,11 +61,11 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, live: Boolean = f
         val listener =
             object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && !demo)
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING)
                         Log.d(PORTAL_TAG, "stage=playback.player playing=$isPlaying")
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && !demo) Log.d(PORTAL_TAG,
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                         "stage=playback.player state=${when (playbackState) {
                             Player.STATE_IDLE -> "idle"
                             Player.STATE_BUFFERING -> "buffering"
@@ -76,7 +76,7 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, live: Boolean = f
                 }
                 override fun onPlayerError(playbackError: PlaybackException) {
                     error = true
-                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && !demo) {
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) {
                         val cause = playbackError.cause
                         val status = (cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
                         Log.w(PORTAL_TAG, "stage=playback.player failure=${playbackError.errorCodeName} " +

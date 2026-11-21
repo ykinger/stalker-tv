@@ -9,8 +9,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
-import com.ykinger.stalkertv.ui.TvApp
 import com.ykinger.stalkertv.ui.ProfileSetup
+import com.ykinger.stalkertv.ui.TermsGate
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
                         onBackground = Color(0xFFF0F3F7),
                     )
             ) {
-                ProfileSetup { TvApp((application as TvApplication).container) }
+                TermsGate(onDecline = { finishAffinity() }) { ProfileSetup() }
             }
         }
     }

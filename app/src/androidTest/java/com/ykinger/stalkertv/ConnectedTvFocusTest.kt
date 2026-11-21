@@ -13,6 +13,23 @@ import org.junit.runner.RunWith
 class ConnectedTvFocusTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun leftMenuCanSwitchViewerProfile() {
+        var switched = false
+        val repository = object : ContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        compose.setContent {
+            ConnectedTvScreen(AppContainer(repository), profileName = "Alice",
+                onSwitchProfile = { switched = true })
+        }
+        compose.onNodeWithContentDescription("Switch profile").performClick()
+        compose.runOnIdle { org.junit.Assert.assertTrue(switched) }
+    }
+
     @Test fun selectingCategoryWithoutVisibleMoviesDoesNotRequestUnattachedFocus() {
         val repository = object : ContentRepository {
             override suspend fun catalogue() = ProviderResult.Success(Catalogue(
@@ -433,13 +450,23 @@ class ConnectedTvFocusTest {
             compose.onAllNodesWithContentDescription("Search $section").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithContentDescription("Search $section").performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasSetTextAction() and isFocused()).fetchSemanticsNodes().isNotEmpty()
+        }
+        val requestsBeforeTyping = requests.size
         compose.onNode(hasSetTextAction()).performTextInput("Blue")
+        compose.onNode(hasSetTextAction()).assertTextEquals("Blue")
+        compose.onNode(hasSetTextAction()).assertIsFocused()
+        compose.waitForIdle()
+        org.junit.Assert.assertEquals("typing must not submit a portal search",
+            requestsBeforeTyping, requests.size)
+        compose.onNodeWithContentDescription("Search $section").performClick()
         compose.waitUntil(5_000) {
             requests.lastOrNull() == "Blue" &&
                 compose.onAllNodesWithContentDescription("Blue Title").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithContentDescription("Red Title").assertDoesNotExist()
-        compose.onNode(hasSetTextAction()).performKeyInput {
+        compose.onNodeWithContentDescription("Search $section").performKeyInput {
             keyDown(androidx.compose.ui.input.key.Key.DirectionDown)
             keyUp(androidx.compose.ui.input.key.Key.DirectionDown)
         }
@@ -484,6 +511,8 @@ class ConnectedTvFocusTest {
             compose.onAllNodesWithContentDescription("Episode 1: Pilot").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("Season 1").assertExists()
+        compose.onNodeWithText("Pilot").assertExists()
+        compose.onNodeWithText("E1. Pilot").assertDoesNotExist()
         compose.onAllNodesWithContentDescription("Episode 1: Pilot")[0].assertHasClickAction()
         compose.onNodeWithText("Back to Shows").assertDoesNotExist()
         compose.onNodeWithText("A Show").assertIsDisplayed()

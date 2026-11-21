@@ -2,8 +2,6 @@ package com.ykinger.stalkertv
 
 import android.app.Application
 import com.ykinger.stalkertv.core.ContentRepository
-import com.ykinger.stalkertv.core.MockContentRepository
-import com.ykinger.stalkertv.core.MockScenario
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -23,8 +21,8 @@ class AppContainer(private val connectedRepository: ContentRepository? = null) {
     }
     val portalClient: OkHttpClient get() = sharedPortalClient
     val handshakeClient: OkHttpClient get() = sharedHandshakeClient
-    fun repository(scenario: MockScenario): ContentRepository =
-        connectedRepository ?: MockContentRepository(scenario = scenario)
+    val repository: ContentRepository
+        get() = requireNotNull(connectedRepository) { "No portal repository is connected." }
 }
 
 class TvApplication : Application() {

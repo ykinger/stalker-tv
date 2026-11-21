@@ -34,6 +34,7 @@ import java.net.NetworkInterface
 import java.net.URLEncoder
 import java.security.KeyStore
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -48,22 +49,76 @@ import org.json.JSONException
 import com.ykinger.stalkertv.BuildConfig
 import com.ykinger.stalkertv.AppContainer
 import com.ykinger.stalkertv.TvApplication
+import com.ykinger.stalkertv.core.Category
 import com.ykinger.stalkertv.core.ContentKind
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okio.Buffer
 
 internal const val PORTAL_TAG = "StalkerPortal"
+internal const val WIRE_TAG = "VibeTvWire"
 // Keep the debug build usable without emitting portal, player, or input diagnostics.
 internal const val DIAGNOSTIC_LOGGING = true
+private const val LOGCAT_CHUNK_SIZE = 3_000
+private val wireRequestSequence = AtomicLong()
 
-internal data class PortalProfile(val serial: String, val host: String, val mac: String, val name: String = host)
+private fun logWireChunks(requestId: Long, field: String, value: String) {
+    if (!BuildConfig.DEBUG) return
+    val chunks = value.chunked(LOGCAT_CHUNK_SIZE).ifEmpty { listOf("") }
+    chunks.forEachIndexed { index, chunk ->
+        Log.d(WIRE_TAG, "id=$requestId field=$field chunk=${index + 1}/${chunks.size} $chunk")
+    }
+}
+
+internal data class ViewerProfile(val id: String, val name: String)
+
+/** Portal connection owned by one viewer, or global when ownerProfileId is null. */
+internal data class PortalProfile(
+    val serial: String,
+    val host: String,
+    val mac: String,
+    val name: String = host,
+    val id: String = "",
+    val ownerProfileId: String? = null,
+)
+
+internal fun playlistsForViewer(playlists: List<PortalProfile>, viewerId: String): List<PortalProfile> =
+    playlists.filter { it.ownerProfileId == null || it.ownerProfileId == viewerId }
 
 private val settingsBackground = Color(0xFF101314)
 private val settingsPanel = Color(0xFF24282A)
 private val settingsHeader = Color(0xFF303436)
 private val settingsMuted = Color(0xFFABB0B3)
 private val settingsBlue = Color(0xFF168DD0)
+
+/** Viewer names contain no credentials and stay in ordinary app-private storage. */
+private class ViewerProfileStore(context: Context) {
+    private val prefs = context.getSharedPreferences("viewer-profiles-v1", Context.MODE_PRIVATE)
+
+    fun initialized(): Boolean = prefs.getBoolean("initialized", false)
+
+    fun initialize() {
+        check(prefs.edit().putBoolean("initialized", true).commit())
+    }
+
+    fun save(profiles: List<ViewerProfile>) {
+        val data = JSONArray().apply {
+            profiles.forEach { put(JSONObject().put("id", it.id).put("name", it.name)) }
+        }
+        check(prefs.edit().putString("profiles", data.toString()).commit())
+    }
+
+    fun load(): List<ViewerProfile> {
+        val data = prefs.getString("profiles", null) ?: return emptyList()
+        val entries = JSONArray(data)
+        return (0 until entries.length()).mapNotNull { index ->
+            val row = entries.optJSONObject(index) ?: return@mapNotNull null
+            val id = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val name = row.optString("name").trim().takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            ViewerProfile(id, name)
+        }
+    }
+}
 
 /** Stores configuration encrypted; authentication tokens remain in memory only. */
 private class ProfileStore(context: Context) {
@@ -84,7 +139,9 @@ private class ProfileStore(context: Context) {
         val data = JSONArray().apply {
             profiles.forEach { profile ->
                 put(JSONObject().put("serial", profile.serial).put("host", profile.host)
-                    .put("mac", profile.mac).put("name", profile.name))
+                    .put("mac", profile.mac).put("name", profile.name)
+                    .put("id", profile.id)
+                    .put("owner_profile_id", profile.ownerProfileId ?: JSONObject.NULL))
             }
         }.toString().toByteArray(Charsets.UTF_8)
         check(prefs.edit().putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
@@ -94,6 +151,9 @@ private class ProfileStore(context: Context) {
     fun selectedIndex(): Int = prefs.getInt("selected_index", 0) // Existing saved playlists predate selection persistence.
     fun select(index: Int) {
         check(prefs.edit().putInt("selected_index", index).commit())
+    }
+    fun clear() {
+        check(prefs.edit().clear().commit())
     }
     fun load(): List<PortalProfile> {
         val data = prefs.getString("data", null) ?: return emptyList()
@@ -107,7 +167,9 @@ private class ProfileStore(context: Context) {
         return (0 until entries.length()).map { index ->
             val json = entries.getJSONObject(index)
             PortalProfile(json.getString("serial"), json.getString("host"), json.getString("mac"),
-                json.optString("name").ifBlank { json.getString("host") })
+                json.optString("name").ifBlank { json.getString("host") },
+                json.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+                json.optString("owner_profile_id").takeUnless { it.isBlank() || it == "null" })
         }
     }
 }
@@ -201,8 +263,8 @@ internal fun vodHeaders(profile: PortalProfile, token: String?): Map<String, Str
 
 internal fun portalRequest(profile: PortalProfile, query: String, token: String? = null,
     container: AppContainer = AppContainer()): Any {
-    // Only known protocol names enter diagnostics; never log query parameters,
-    // URLs, response bodies, or exception messages (they may contain credentials).
+    // Routine diagnostics remain sanitized. A dedicated debug-only wire stream is
+    // enabled below for episode/detail and VOD create_link troubleshooting.
     val params = "https://localhost/?$query".toHttpUrl()
     val type = params.queryParameter("type")?.takeIf {
         it in setOf("stb", "itv", "vod", "series", "account_info", "watchdog", "epg")
@@ -214,6 +276,9 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
             "get_short_epg", "get_epg_info", "get_simple_data_table", "get_events")
     } ?: "other"
     val stage = "$type.$action"
+    val wireRequestId = if (BuildConfig.DEBUG && type == "vod" &&
+        ((action == "get_ordered_list" && params.queryParameter("movie_id") != null) ||
+            action == "create_link")) wireRequestSequence.incrementAndGet() else null
     var address = URI("${profile.host}?$query")
     val visited = mutableSetOf<URI>()
     try {
@@ -225,9 +290,19 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                     else portalHeaders(profile, token)
                 headers.forEach { (name, value) -> header(name, value) }
             }.build()
+            wireRequestId?.let { requestId ->
+                logWireChunks(requestId, "request.method", request.method)
+                logWireChunks(requestId, "request.url", request.url.toString())
+                // Portal operations use GET. Authentication headers and cookies
+                // are intentionally excluded from this diagnostic stream.
+                logWireChunks(requestId, "request.body", "<empty: GET request>")
+            }
             val client = if (type == "stb") container.handshakeClient else container.portalClient
             client.newCall(request).execute().use { response ->
                 val status = response.code
+                wireRequestId?.let { requestId ->
+                    logWireChunks(requestId, "response.status", status.toString())
+                }
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                     "stage=$stage http=$status hop=$hop route=${routeKind(address)} " +
                         "content=${when {
@@ -240,9 +315,25 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                     val location = response.header("Location")
                     check(hop < 5) { "Too many portal redirects." }
                     address = portalRedirect(address, location)
+                    wireRequestId?.let { requestId ->
+                        logWireChunks(requestId, "response.body", "<not read: redirect>")
+                    }
                     if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                         "stage=$stage redirectHop=${hop + 1} targetRoute=${routeKind(address)}")
                     return@repeat
+                }
+                if (status != 200) {
+                    wireRequestId?.let { requestId ->
+                        val errorBuffer = Buffer()
+                        response.body?.source()?.let { source ->
+                            while (errorBuffer.size <= 1024L * 1024 &&
+                                source.read(errorBuffer, 1024L * 1024 + 1 - errorBuffer.size) != -1L) { }
+                        }
+                        val errorBody = if (errorBuffer.size <= 1024L * 1024)
+                            errorBuffer.readString(Charsets.UTF_8)
+                        else "<response body exceeds 1 MiB limit>"
+                        logWireChunks(requestId, "response.body", errorBody)
+                    }
                 }
                 when (status) {
                     401, 403 -> error("Device registration or session rejected.")
@@ -257,6 +348,9 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                 check(buffer.size <= 1024 * 1024) { "Portal response is too large." }
                 val body = buffer.readByteArray()
                 val response = String(body, Charsets.UTF_8)
+                wireRequestId?.let { requestId ->
+                    logWireChunks(requestId, "response.body", response)
+                }
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage bytes=${body.size} hop=$hop")
                 if (!response.trimStart().startsWith("{")) {
                     if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage format=nonJson hop=$hop")
@@ -372,7 +466,7 @@ private fun verifyPortal(profile: PortalProfile, container: AppContainer): Porta
     return PortalSession(token, profileResult.optInt("watchdog_timeout", 0).takeIf { it in 15..3600 })
 }
 
-/** Android often hides hardware MACs; never substitute the platform's placeholder or a demo MAC. */
+/** Android often hides hardware MACs; never substitute the platform's placeholder or a fabricated MAC. */
 private fun availableDeviceMac(): String? = try {
     NetworkInterface.getNetworkInterfaces()?.toList()
         ?.filter { it.name == "eth0" || it.name == "wlan0" }
@@ -384,14 +478,19 @@ private fun availableDeviceMac(): String? = try {
 } catch (_: Exception) { null }
 
 @Composable
-fun ProfileSetup(onDemo: @Composable () -> Unit) {
+fun ProfileSetup() {
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as TvApplication).container }
     val store = remember { ProfileStore(context) }
+    val viewerStore = remember { ViewerProfileStore(context) }
     val categoryStore = remember { VodCategoryKindStore(context) }
-    var profiles by remember { mutableStateOf<List<PortalProfile>>(emptyList()) }
+    var viewerProfiles by remember { mutableStateOf<List<ViewerProfile>>(emptyList()) }
+    var activeViewer by remember { mutableStateOf<ViewerProfile?>(null) }
+    var viewerName by remember { mutableStateOf("") }
+    var playlists by remember { mutableStateOf<List<PortalProfile>>(emptyList()) }
     var loadingProfiles by remember { mutableStateOf(true) }
-    var screen by remember { mutableStateOf("landing") }
+    var screen by remember { mutableStateOf("viewerChooser") }
+    var playlistForEveryone by remember { mutableStateOf(false) }
     var serial by remember { mutableStateOf("") }
     var host by remember { mutableStateOf("") }
     var mac by remember { mutableStateOf("") }
@@ -402,6 +501,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     var sessionApiHost by remember { mutableStateOf<String?>(null) }
     var sessionWatchdogSeconds by remember { mutableStateOf<Int?>(null) }
     var sessionCategoryKinds by remember { mutableStateOf<Map<String, ContentKind>>(emptyMap()) }
+    var sessionVodCategories by remember { mutableStateOf<List<Category>?>(null) }
     var scanningCategories by remember { mutableStateOf(false) }
     var scannedCategories by remember { mutableIntStateOf(0) }
     var totalCategories by remember { mutableIntStateOf(0) }
@@ -420,7 +520,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     val homeInstance = remember { java.util.UUID.randomUUID().toString() }
     /** Replace the map only after every category probe completes successfully. */
     suspend fun scanAndStoreCategoryKinds(profile: PortalProfile,
-        verified: VerifiedPortal): Map<String, ContentKind> {
+        verified: VerifiedPortal): ScannedVodCategories {
         scanningCategories = true
         scannedCategories = 0
         totalCategories = 0
@@ -436,11 +536,13 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         }
     }
     fun connect(profile: PortalProfile, refreshCategoryMap: Boolean = false) {
+        val viewer = activeViewer ?: return
         selectedProfile = profile
         sessionToken = null
         sessionApiHost = null
         sessionWatchdogSeconds = null
         sessionCategoryKinds = emptyMap()
+        sessionVodCategories = null
         scanningCategories = false
         scannedCategories = 0
         totalCategories = 0
@@ -455,16 +557,24 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 val verified = withContext(Dispatchers.IO) {
                     val result = testPortal(profile, container)
                     stage = "profile.store.select"
-                    val index = profiles.indexOf(profile).also { require(it >= 0) }
+                    val index = playlists.indexOf(profile).also { require(it >= 0) }
+                    require(profile.ownerProfileId == null || profile.ownerProfileId == viewer.id)
                     if (store.selectedIndex() != index) store.select(index)
                     result
                 }
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=playlist.connect verified=true")
-                val kinds = if (refreshCategoryMap) {
+                if (refreshCategoryMap) {
                     stage = "vod.category_scan"
-                    scanAndStoreCategoryKinds(profile, verified)
-                } else withContext(Dispatchers.IO) { categoryStore.load(profile) }.orEmpty()
-                sessionCategoryKinds = kinds
+                    val scan = scanAndStoreCategoryKinds(profile, verified)
+                    sessionCategoryKinds = scan.kinds
+                    sessionVodCategories = scan.categories
+                } else {
+                    val stored = withContext(Dispatchers.IO) {
+                        categoryStore.load(profile).orEmpty() to categoryStore.loadCategories(profile)
+                    }
+                    sessionCategoryKinds = stored.first
+                    sessionVodCategories = stored.second
+                }
                 sessionToken = verified.token
                 sessionApiHost = verified.apiHost
                 sessionWatchdogSeconds = verified.watchdogSeconds
@@ -486,7 +596,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         }
     }
     fun edit(index: Int) {
-        val profile = profiles[index]
+        val profile = playlists[index]
         editingIndex = index
         editName = profile.name
         editHost = profile.host
@@ -500,9 +610,19 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     }
     LaunchedEffect(Unit) {
         try {
-            val (saved, index) = withContext(Dispatchers.IO) { store.load() to store.selectedIndex() }
-            profiles = saved
-            if (index in saved.indices) connect(saved[index])
+            val (savedViewers, savedPlaylists) = withContext(Dispatchers.IO) {
+                // This development checkpoint intentionally starts the new viewer
+                // model clean instead of migrating the old single-playlist state.
+                if (!viewerStore.initialized()) {
+                    store.clear()
+                    categoryStore.clear()
+                    viewerStore.initialize()
+                }
+                viewerStore.load() to store.load()
+            }
+            viewerProfiles = savedViewers
+            playlists = savedPlaylists
+            screen = if (savedViewers.isEmpty()) "viewerCreate" else "viewerChooser"
         } catch (error: Exception) {
             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=profile.store.load failure=${error.javaClass.simpleName}")
             message = "Saved playlist could not be read. Add it again."
@@ -510,7 +630,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         finally { loadingProfiles = false }
     }
     LaunchedEffect(screen, busy) {
-        if (screen != "demo" && screen != "home" && !(screen == "connecting" && busy)) {
+        if (screen != "home" && !(screen == "connecting" && busy)) {
             withFrameNanos { }
             // Connection and playlist loading can replace the screen before its
             // first focus target is attached. Do not crash during that transition.
@@ -536,37 +656,136 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             }
         }
     }
-    BackHandler(screen != "landing" && screen != "home" && screen != "connecting") {
+    BackHandler(screen == "landing" && !busy) {
+        activeViewer = null
+        selectedProfile = null
+        sessionToken = null
+        sessionApiHost = null
+        sessionWatchdogSeconds = null
+        sessionCategoryKinds = emptyMap()
+        sessionVodCategories = null
+        screen = "viewerChooser"
+    }
+    BackHandler(screen !in listOf("landing", "home", "connecting", "viewerChooser", "viewerCreate")) {
         if (!busy) screen = when (screen) {
             "settings" -> if (editingIndex >= 0) {
                 editingIndex = -1
                 "settings"
             } else if (sessionToken != null) "home" else "landing"
             "form" -> "protocol"
-            "protocol" -> if (profiles.isEmpty()) "landing" else "settings"
+            "protocol" -> "playlistScope"
+            "playlistScope" -> "landing"
             "home" -> "settings"
             else -> "landing"
         }
     }
-    if (screen == "demo") {
-        onDemo()
-        return
+    val viewer = activeViewer
+    val visiblePlaylists = remember(playlists, viewer) {
+        if (viewer == null) emptyList()
+        else playlistsForViewer(playlists, viewer.id)
     }
     val connectedProfile = selectedProfile
     val connectedToken = sessionToken
     val activeApiHost = sessionApiHost
     if (screen == "home" && connectedProfile != null && connectedToken != null && activeApiHost != null) {
-        val repository = remember(connectedProfile, connectedToken, activeApiHost, sessionCategoryKinds) {
+        val repository = remember(connectedProfile, connectedToken, activeApiHost, sessionCategoryKinds,
+            sessionVodCategories) {
             StalkerContentRepository(connectedProfile.copy(host = activeApiHost), connectedToken, container,
-                sessionCategoryKinds)
+                sessionCategoryKinds, sessionVodCategories) { categories ->
+                    categoryStore.saveCategories(connectedProfile, categories)
+                }
         }
         val container = remember(repository) { com.ykinger.stalkertv.AppContainer(repository) }
         key(homeInstance) {
-            TvApp(container, demo = false, onProfileSettings = { screen = "settings" })
+            TvApp(container, profileName = viewer?.name.orEmpty(),
+                onProfileSettings = { screen = "settings" },
+                onSwitchProfile = {
+                    selectedProfile = null
+                    sessionToken = null
+                    sessionApiHost = null
+                    sessionWatchdogSeconds = null
+                    sessionCategoryKinds = emptyMap()
+                    sessionVodCategories = null
+                    activeViewer = null
+                    screen = "viewerChooser"
+                })
         }
         return
     }
     when (screen) {
+        "viewerChooser" -> Box(Modifier.fillMaxSize().background(settingsBackground),
+            contentAlignment = Alignment.Center) {
+            Column(Modifier.fillMaxWidth(0.72f).verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Text("VIBETV", fontSize = 30.sp, color = settingsBlue)
+                Text("Who's watching?", fontSize = 30.sp, color = Color.White)
+                if (loadingProfiles) TvInlineStatus("Loading profiles…", loading = true)
+                else {
+                    viewerProfiles.forEachIndexed { index, profile ->
+                        Button(onClick = {
+                            activeViewer = profile
+                            selectedProfile = null
+                            message = ""
+                            screen = "landing"
+                        }, modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier) {
+                            Text(profile.name)
+                        }
+                    }
+                    Button(onClick = { viewerName = ""; message = ""; screen = "viewerCreate" },
+                        modifier = if (viewerProfiles.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier) {
+                        Text("Add profile")
+                    }
+                }
+            }
+        }
+        "viewerCreate" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
+            Box(Modifier.weight(1f).fillMaxHeight().background(settingsHeader).padding(40.dp),
+                contentAlignment = Alignment.CenterStart) {
+                Text("Create profile", fontSize = 32.sp, color = Color.White)
+            }
+            Column(Modifier.weight(1f).fillMaxHeight().padding(36.dp),
+                verticalArrangement = Arrangement.Center) {
+                Text("Name this viewer", fontSize = 24.sp, color = Color.White)
+                Spacer(Modifier.height(18.dp))
+                ProfileField("Profile name", viewerName, !busy, Modifier.focusRequester(firstFocus)) {
+                    viewerName = it
+                }
+                if (message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
+                Spacer(Modifier.height(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(enabled = !busy, onClick = {
+                        val name = viewerName.trim()
+                        if (name.isEmpty() || name.length > 50 ||
+                            viewerProfiles.any { it.name.equals(name, ignoreCase = true) }) {
+                            message = "Enter a unique profile name (up to 50 characters)."
+                            return@Button
+                        }
+                        busy = true
+                        scope.launch {
+                            try {
+                                val created = ViewerProfile(java.util.UUID.randomUUID().toString(), name)
+                                val updated = viewerProfiles + created
+                                withContext(Dispatchers.IO) { viewerStore.save(updated) }
+                                viewerProfiles = updated
+                                activeViewer = created
+                                viewerName = ""
+                                message = ""
+                                val hasAvailable = playlists.any {
+                                    it.ownerProfileId == null || it.ownerProfileId == created.id
+                                }
+                                screen = if (hasAvailable) "landing" else "playlistScope"
+                            } catch (_: Exception) {
+                                message = "Could not save this profile. Please retry."
+                            } finally { busy = false }
+                        }
+                    }) { Text("Create") }
+                    if (viewerProfiles.isNotEmpty()) Button(enabled = !busy, onClick = {
+                        message = ""; screen = "viewerChooser"
+                    }) { Text("Cancel") }
+                }
+            }
+        }
         "processed" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
             Box(Modifier.weight(1f).fillMaxHeight().background(settingsHeader).padding(40.dp),
                 contentAlignment = Alignment.CenterStart) {
@@ -596,9 +815,9 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     scope.launch {
                         try {
                             val renamed = profile.copy(name = name)
-                            val updated = profiles.map { if (it == profile) renamed else it }
+                            val updated = playlists.map { if (it == profile) renamed else it }
                             withContext(Dispatchers.IO) { store.save(updated, updated.indexOf(renamed)) }
-                            profiles = updated
+                            playlists = updated
                             selectedProfile = renamed
                             screen = "home"
                         } catch (_: Exception) {
@@ -636,7 +855,6 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                         scannedCategories.toFloat() / totalCategories else null)
                 if (!busy) {
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }
-                    Button(onClick = { screen = "demo" }) { Text("Open offline demo") }
                 }
             }
         }
@@ -644,24 +862,26 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             Column(Modifier.fillMaxWidth(0.82f).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                Text("STALKER TV", fontSize = 30.sp, color = settingsBlue)
+                Text("VIBETV", fontSize = 30.sp, color = settingsBlue)
+                Text(viewer?.name.orEmpty(), fontSize = 18.sp, color = settingsMuted)
                 if (loadingProfiles) TvInlineStatus("Loading playlists…", loading = true)
-                else if (profiles.isEmpty()) Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Stalker TV does not provide any content", fontSize = 25.sp, color = Color.White)
+                else if (visiblePlaylists.isEmpty()) Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("VibeTV does not provide any content", fontSize = 25.sp, color = Color.White)
                     Text("Add your own playlist to start watching", color = settingsMuted)
                 }
                 else {
                     Text("Choose a playlist", fontSize = 28.sp, color = Color.White)
-                    profiles.forEachIndexed { index, playlist ->
+                    visiblePlaylists.forEach { playlist ->
                         Button(enabled = !busy, onClick = { connect(playlist) }) {
-                             Text(playlist.name)
+                             Text(playlist.name + if (playlist.ownerProfileId == null) " · Everyone" else "")
                         }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Button(enabled = !loadingProfiles, onClick = { screen = "protocol" }, modifier = Modifier.focusRequester(firstFocus)) { Text("Add playlist") }
+                    Button(enabled = !loadingProfiles, onClick = { screen = "playlistScope" },
+                        modifier = Modifier.focusRequester(firstFocus)) { Text("Add playlist") }
                     Button(onClick = { screen = "settings" }) { Text("Settings") }
-                    Button(onClick = { screen = "demo" }) { Text("Open offline demo") }
+                    Button(onClick = { activeViewer = null; screen = "viewerChooser" }) { Text("Switch profile") }
                 }
                 if (message.isNotEmpty()) Text(message, color = settingsMuted)
             }
@@ -670,21 +890,22 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             Column(Modifier.weight(0.9f).fillMaxHeight().background(Color(0xFF15191A))
                 .padding(start = 36.dp, top = 34.dp, end = 28.dp, bottom = 28.dp)
                 .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("STALKER TV", color = settingsBlue, fontSize = 16.sp)
-                Text("Playlists", color = Color.White, fontSize = 32.sp)
+                Text("VIBETV", color = settingsBlue, fontSize = 16.sp)
+                Text("${viewer?.name.orEmpty()} · Playlists", color = Color.White, fontSize = 28.sp)
                 Spacer(Modifier.height(8.dp))
                 if (loadingProfiles) TvInlineStatus("Loading playlists…", loading = true)
-                else if (profiles.isEmpty()) Text("No playlists saved.", color = Color(0xFFD0DADC))
-                profiles.forEachIndexed { index, profile ->
+                else if (visiblePlaylists.isEmpty()) Text("No playlists available.", color = Color(0xFFD0DADC))
+                visiblePlaylists.forEachIndexed { visibleIndex, profile ->
+                    val index = playlists.indexOf(profile)
                     Button(enabled = !busy, onClick = { edit(index) },
-                        modifier = if (index == 0) Modifier.fillMaxWidth().focusRequester(firstFocus) else Modifier.fillMaxWidth()) {
-                        Text(profile.name)
+                        modifier = if (visibleIndex == 0) Modifier.fillMaxWidth().focusRequester(firstFocus) else Modifier.fillMaxWidth()) {
+                        Text(profile.name + if (profile.ownerProfileId == null) " · Everyone" else "")
                     }
                 }
                 Button(enabled = !loadingProfiles && !busy, onClick = {
-                    editingIndex = -1; message = ""; screen = "protocol"
-                }, modifier = if (profiles.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier) {
-                    Text(if (profiles.isEmpty()) "Add playlist" else "Add another playlist")
+                    editingIndex = -1; message = ""; screen = "playlistScope"
+                }, modifier = if (visiblePlaylists.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier) {
+                    Text(if (visiblePlaylists.isEmpty()) "Add playlist" else "Add another playlist")
                 }
                 Button(enabled = !busy, onClick = {
                     if (editingIndex >= 0) editingIndex = -1
@@ -694,7 +915,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             Column(Modifier.weight(1.5f).fillMaxHeight().background(settingsPanel)
                 .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                val original = profiles.getOrNull(editingIndex)
+                val original = playlists.getOrNull(editingIndex)
                 Box(Modifier.fillMaxWidth().background(settingsHeader).padding(26.dp)) {
                     Text(original?.name ?: "Playlists", color = Color.White, fontSize = 27.sp)
                 }
@@ -706,6 +927,8 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     if (selectedProfile == null) Text("No playlist selected. Not connected.", color = Color(0xFFB7C8C6))
                 } else {
                     Text("Stalker Portal parameters", color = settingsBlue, fontSize = 18.sp)
+                    Text(if (original.ownerProfileId == null) "Available to everyone"
+                        else "Private to ${viewer?.name.orEmpty()}", color = settingsMuted)
                     if (selectedProfile == original && sessionToken != null)
                         Text("Selected · Connected", color = Color(0xFFACB6BB))
                     ProfileField("Playlist name", editName, !busy) { editName = it }
@@ -727,8 +950,10 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                             message = "Enter a name (up to 100 characters), valid HTTP(S) portal URL, and MAC in AA:BB:CC:DD:EE:FF format."
                             return@Button
                         }
-                        if (profiles.withIndex().any { it.index != editingIndex && it.value.host == candidate.host &&
-                                it.value.mac == candidate.mac && it.value.serial == candidate.serial }) {
+                        if (playlists.withIndex().any { it.index != editingIndex &&
+                                (it.value.ownerProfileId == null || it.value.ownerProfileId == viewer?.id) &&
+                                it.value.host == candidate.host && it.value.mac == candidate.mac &&
+                                it.value.serial == candidate.serial }) {
                             message = "This playlist is already saved."
                             return@Button
                         }
@@ -740,11 +965,11 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                         scope.launch {
                             var reconnect = false
                             try {
-                                val updated = profiles.toMutableList().apply { this[index] = candidate }
+                                val updated = playlists.toMutableList().apply { this[index] = candidate }
                                 withContext(Dispatchers.IO) {
                                     store.save(updated, if (wasSelected) index else store.selectedIndex())
                                 }
-                                profiles = updated
+                                playlists = updated
                                 if (wasSelected) {
                                     selectedProfile = candidate
                                     if (credentialsChanged) {
@@ -752,6 +977,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                         sessionApiHost = null
                                         sessionWatchdogSeconds = null
                                         sessionCategoryKinds = emptyMap()
+                                        sessionVodCategories = null
                                         reconnectProfile = candidate
                                     }
                                 }
@@ -782,6 +1008,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                 sessionApiHost = null
                                 sessionWatchdogSeconds = null
                                 sessionCategoryKinds = emptyMap()
+                                sessionVodCategories = null
                                 reconnectProfile = null
                                 message = "No playlist selected. Not connected."
                             } catch (_: Exception) {
@@ -796,6 +1023,33 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 }
             }
         }
+        "playlistScope" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
+            Box(Modifier.weight(1f).fillMaxHeight().background(settingsHeader).padding(40.dp),
+                contentAlignment = Alignment.CenterStart) {
+                Text("Who can use this playlist?", fontSize = 32.sp, color = Color.White)
+            }
+            Column(Modifier.weight(1f).fillMaxHeight().background(settingsPanel).padding(36.dp),
+                verticalArrangement = Arrangement.Center) {
+                Text("Playlist access", fontSize = 24.sp, color = Color.White)
+                Text("You can change connection details later from Settings.", color = settingsMuted)
+                Spacer(Modifier.height(22.dp))
+                Button(onClick = {
+                    playlistForEveryone = false
+                    message = ""
+                    screen = "protocol"
+                }, modifier = Modifier.focusRequester(firstFocus)) {
+                    Text("Just me")
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = {
+                    playlistForEveryone = true
+                    message = ""
+                    screen = "protocol"
+                }) { Text("Everyone") }
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { screen = "landing" }) { Text("Back") }
+            }
+        }
         "protocol", "form" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
             Box(Modifier.weight(1.1f).fillMaxHeight().background(settingsHeader).padding(30.dp),
                 contentAlignment = Alignment.CenterStart) {
@@ -808,16 +1062,16 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     Spacer(Modifier.height(22.dp))
                     Button(onClick = { message = ""; screen = "form" }, modifier = Modifier.focusRequester(firstFocus)) { Text("Stalker Portal") }
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { screen = if (profiles.isEmpty()) "landing" else "settings" }) { Text("Back") }
+                    Button(onClick = { screen = "playlistScope" }) { Text("Back") }
                 }
             } else {
                 Column(Modifier.weight(1.15f).fillMaxHeight().background(settingsPanel).padding(24.dp)
                     .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Connection details", fontSize = 22.sp, color = Color.White)
                     ProfileField("Portal URL/host", host, !busy, Modifier.focusRequester(firstFocus)) { host = it }
-                    Text("Enter your provider URL or host. Local mock: http://10.0.2.2:8080", fontSize = 12.sp, color = settingsMuted)
+                    Text("Enter your provider URL or host, for example https://portal.example.com/c/", fontSize = 12.sp, color = settingsMuted)
                     ProfileField("MAC address", mac, !busy) { mac = it }
-                    Text("Use your provider-registered MAC. Docker demo: 00:1A:79:00:00:01", fontSize = 12.sp, color = settingsMuted)
+                    Text("Use the MAC address registered with your provider.", fontSize = 12.sp, color = settingsMuted)
                     ProfileField("Serial ID (optional)", serial, !busy) { serial = it }
                     if (message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
                     if (busy && scanningCategories) {
@@ -836,12 +1090,15 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     val candidate = try {
                         require(serial.length <= 256)
                         require(Regex("(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}").matches(mac.trim()))
-                        PortalProfile(serial.trim(), endpoint(host.trim()), mac.trim().uppercase())
+                        PortalProfile(serial.trim(), endpoint(host.trim()), mac.trim().uppercase(),
+                            id = java.util.UUID.randomUUID().toString(),
+                            ownerProfileId = if (playlistForEveryone) null else viewer?.id
+                                ?: error("No viewer selected"))
                     } catch (_: Exception) {
                         message = "Enter a valid HTTP(S) portal URL and MAC in AA:BB:CC:DD:EE:FF format. Serial ID is optional."
                         return@Button
                     }
-                    if (profiles.any { it.host == candidate.host && it.mac == candidate.mac && it.serial == candidate.serial }) {
+                    if (visiblePlaylists.any { it.host == candidate.host && it.mac == candidate.mac && it.serial == candidate.serial }) {
                         message = "This playlist is already saved."
                         return@Button
                     }
@@ -852,6 +1109,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     sessionApiHost = null
                     sessionWatchdogSeconds = null
                     sessionCategoryKinds = emptyMap()
+                    sessionVodCategories = null
                     scanningCategories = false
                     scannedCategories = 0
                     totalCategories = 0
@@ -861,17 +1119,18 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                         try {
                             val verified = withContext(Dispatchers.IO) { testPortal(candidate, container) }
                             stage = "vod.category_scan"
-                            val kinds = scanAndStoreCategoryKinds(candidate, verified)
+                            val scan = scanAndStoreCategoryKinds(candidate, verified)
                             stage = "portal.counts"
                             val counts = withContext(Dispatchers.IO) {
                                 portalCounts(candidate, verified, container)
                             }
                             stage = "profile.store.save"
-                            val updated = profiles + candidate
+                            val updated = playlists + candidate
                             withContext(Dispatchers.IO) { store.save(updated, updated.lastIndex) }
                             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage saved=true")
-                            profiles = updated
-                            sessionCategoryKinds = kinds
+                            playlists = updated
+                            sessionCategoryKinds = scan.kinds
+                            sessionVodCategories = scan.categories
                             sessionToken = verified.token
                             sessionApiHost = verified.apiHost
                             sessionWatchdogSeconds = verified.watchdogSeconds

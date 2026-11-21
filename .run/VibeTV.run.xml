@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Stalker TV" type="AndroidRunConfigurationType" factoryName="Android App">
+  <configuration default="false" name="VibeTV" type="AndroidRunConfigurationType" factoryName="Android App">
     <module name="StalkerTV.app" />
     <option name="DEPLOY" value="true" />
     <option name="CLEAR_APP_STORAGE" value="false" />

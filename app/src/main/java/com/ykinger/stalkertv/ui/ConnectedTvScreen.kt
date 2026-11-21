@@ -7,8 +7,15 @@ import androidx.compose.foundation.border
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
@@ -25,7 +32,10 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
@@ -46,11 +56,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -94,6 +106,7 @@ private val cell = Color(0xFF303436)
 private val muted = Color(0xFFABB0B3)
 private val accent = Color(0xFF168DD0)
 private val focusColor = Color(0xFFE0E3E4)
+private const val navigationAnimationMillis = 280
 
 private data class SeasonEpisodeState(
     val episodes: List<Title> = emptyList(),
@@ -111,9 +124,10 @@ internal fun channelsInGroup(catalogue: Catalogue, group: String?, paged: Boolea
     catalogue.titles.filter { it.kind == ContentKind.CHANNEL &&
         (paged || group == null || it.categoryId == group) }
 
-/** The connected experience is guide-first; the offline sample catalogue remains separate. */
+/** The connected experience is guide-first. */
 @Composable
-internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () -> Unit) {
+internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () -> Unit = {},
+    profileName: String = "Profile", onSwitchProfile: () -> Unit = {}) {
     val model: CatalogueViewModel = viewModel(
         key = "connected-${System.identityHashCode(container)}",
         factory = viewModelFactory { initializer { CatalogueViewModel(container) } },
@@ -122,6 +136,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     val availableVodKinds by model.vodKinds.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val composeView = LocalView.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var selectedId by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf<PlaybackSource?>(null) }
     var resolving by remember { mutableStateOf(false) }
@@ -136,6 +151,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     var vodCategory by remember { mutableStateOf<String?>(null) }
     var vodCategoryLabel by remember { mutableStateOf<String?>(null) }
     var movieSearch by remember { mutableStateOf("") }
+    var movieSearchDraft by remember { mutableStateOf("") }
     var movieSearchOpen by remember { mutableStateOf(false) }
     var movieSort by remember { mutableStateOf("added") }
     var movieSortOpen by remember { mutableStateOf(false) }
@@ -166,7 +182,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         else -> null
     }
     // Portal VOD pages are filtered by kind and category on the server.
-    // Offline catalogues still need both filters locally.
+    // Non-paged repositories still need both filters locally.
     val portalFilteredVod = model.repository is PagedContentRepository
     val categoryKinds = model.repository as? VodCategoryKindSource
     val navigationVisible = remember { MutableTransitionState(true) }
@@ -193,7 +209,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         vodTitle = null
         vodCategory = null
         vodCategoryLabel = null
-        movieSearch = ""; movieSearchOpen = false; movieSortOpen = false
+        movieSearch = ""; movieSearchDraft = ""; movieSearchOpen = false; movieSortOpen = false
         movieSort = "added"; highlightedMovieId = null
         focusedPosterIndex = -1
         focusSelectedVodCategory = false
@@ -272,10 +288,19 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         vodCategoryLabel = (state as? LoadState.Ready<Catalogue>)?.value?.categories
             ?.firstOrNull { it.id == category }?.name
         vodCategory = category; vodTitle = null; area = "content"
-        movieSearch = ""; movieSearchOpen = false; movieSortOpen = false
+        movieSearch = ""; movieSearchDraft = ""; movieSearchOpen = false; movieSortOpen = false
         highlightedMovieId = null; movieSort = "added"
         focusedPosterIndex = -1
         model.loadSection(kind, category, ordering = movieSort)
+    }
+
+    fun submitMovieSearch() {
+        val submitted = movieSearchDraft.trim()
+        highlightedMovieId = null
+        movieSearch = submitted
+        vodKind?.let { kind ->
+            model.loadSection(kind, vodCategory, query = submitted, ordering = movieSort)
+        }
     }
 
     fun openChannelCategory(category: String?) {
@@ -291,7 +316,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         model.loadSection(ContentKind.CHANNEL, category)
     }
 
-    LaunchedEffect(section, vodCategory, movieSearch, movieSort, area, vodTitle) {
+    LaunchedEffect(section, vodCategory, movieSort, area, vodTitle) {
         if (vodKind == null || area != "content" || vodTitle != null) return@LaunchedEffect
         delay(350)
         model.loadSection(vodKind, vodCategory, query = movieSearch.trim(), ordering = movieSort)
@@ -431,20 +456,36 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
 
     if (fullScreen && source != null) {
-        SamplePlayer(source!!, demo = false, live = section == "TV") { fullScreen = false }
+        SamplePlayer(source!!, live = section == "TV") { fullScreen = false }
         return
     }
     val vodBrowsing = vodKind != null && area == "content"
     val tvBrowsing = section == "TV" && area == "guide"
     navigationVisible.targetState = !vodBrowsing && !tvBrowsing
     val compactMenu = area != "menu"
+    val menuWidth by animateDpAsState(if (compactMenu) 68.dp else 190.dp,
+        animationSpec = tween(navigationAnimationMillis, easing = FastOutSlowInEasing),
+        label = "Main navigation width")
+    val navigationEnter = slideInHorizontally(
+        animationSpec = tween(navigationAnimationMillis, easing = FastOutSlowInEasing),
+        initialOffsetX = { -it }) +
+        expandHorizontally(animationSpec = tween(navigationAnimationMillis,
+            easing = FastOutSlowInEasing), expandFrom = Alignment.Start) +
+        fadeIn(animationSpec = tween(navigationAnimationMillis / 2))
+    val navigationExit = slideOutHorizontally(
+        animationSpec = tween(navigationAnimationMillis, easing = FastOutSlowInEasing),
+        targetOffsetX = { -it }) +
+        shrinkHorizontally(animationSpec = tween(navigationAnimationMillis,
+            easing = FastOutSlowInEasing), shrinkTowards = Alignment.Start) +
+        fadeOut(animationSpec = tween(navigationAnimationMillis / 2,
+            delayMillis = navigationAnimationMillis / 2))
     BackHandler(area != "menu") {
         if (movieSortOpen) {
             movieSortOpen = false
             try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
         } else if (movieSearchOpen) {
-            movieSearchOpen = false; movieSearch = ""
-            if (vodKind != null) model.loadSection(vodKind, vodCategory, ordering = movieSort)
+            movieSearchOpen = false; movieSearch = ""; movieSearchDraft = ""
+            vodKind?.let { kind -> model.loadSection(kind, vodCategory, ordering = movieSort) }
             try { sortButtonFocus.requestFocus() } catch (_: IllegalStateException) { }
         } else
         when (area) {
@@ -458,9 +499,8 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
     Box(Modifier.fillMaxSize().background(background)) {
     Row(Modifier.fillMaxSize()) {
-        AnimatedVisibility(navigationVisible, enter = expandHorizontally(expandFrom = Alignment.Start),
-            exit = shrinkHorizontally(shrinkTowards = Alignment.Start)) {
-        Column(Modifier.width(if (compactMenu) 68.dp else 190.dp).fillMaxHeight().background(panel)
+        AnimatedVisibility(navigationVisible, enter = navigationEnter, exit = navigationExit) {
+        Column(Modifier.width(menuWidth).fillMaxHeight().background(panel)
             .onFocusChanged {
                 mainMenuHasFocus = it.hasFocus
                 // A focused item can report focus once more while AnimatedVisibility
@@ -471,13 +511,18 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             .focusGroup()
             .padding(if (compactMenu) 8.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (compactMenu) "ST" else "STALKER TV", fontSize = 22.sp,
+                Text(if (compactMenu) "VT" else "VIBETV", fontSize = 22.sp,
                     fontWeight = FontWeight.Bold, color = accent,
-                    modifier = Modifier.padding(bottom = 70.dp))
+                    modifier = Modifier.padding(bottom = if (compactMenu) 30.dp else 8.dp))
+                if (!compactMenu) Text(profileName, color = muted, fontSize = 13.sp,
+                    modifier = Modifier.padding(start = 12.dp, bottom = 12.dp))
+                GuideAction("Switch profile", icon = Icons.Default.AccountCircle, compact = compactMenu,
+                    onClick = onSwitchProfile)
+                Spacer(Modifier.height(if (compactMenu) 20.dp else 34.dp))
                 val menu = buildList {
                     add("Search" to Icons.Default.Search)
                     add("TV" to ConnectedMenuIcons.tv)
-                    // A partial offline VOD page cannot prove a section is empty.
+                    // A partial non-paged VOD result cannot prove a section is empty.
                     // Portal sections have separate server-filtered queries.
                     if (portalFilteredVod || availableVodKinds == null || ContentKind.MOVIE in availableVodKinds.orEmpty() || section == "Movies")
                         add("Movies" to ConnectedMenuIcons.movies)
@@ -502,8 +547,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             val loaded = state as? LoadState.Ready
             val titles = loaded?.value?.titles?.filter { it.kind == kind }.orEmpty()
             val allCategory = loaded?.value?.categories?.firstOrNull { it.id == "*" }
-            AnimatedVisibility(navigationVisible, enter = expandHorizontally(expandFrom = Alignment.Start),
-                exit = shrinkHorizontally(shrinkTowards = Alignment.Start)) {
+            AnimatedVisibility(navigationVisible, enter = navigationEnter, exit = navigationExit) {
             Column(Modifier.width(192.dp).fillMaxHeight().background(background)
                 .onFocusChanged {
                     vodCategoryHasFocus = it.hasFocus
@@ -554,8 +598,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     val channels = catalogue.titles.filter { it.kind == ContentKind.CHANNEL }
                     val visible = channelsInGroup(catalogue, group, model.repository is PagedContentRepository)
                     val allGenre = catalogue.categories.firstOrNull { it.id == "*" }
-                    AnimatedVisibility(navigationVisible, enter = expandHorizontally(expandFrom = Alignment.Start),
-                        exit = shrinkHorizontally(shrinkTowards = Alignment.Start)) {
+                    AnimatedVisibility(navigationVisible, enter = navigationEnter, exit = navigationExit) {
                     Column(Modifier.width(192.dp).fillMaxHeight().background(background)
                         .onFocusChanged {
                             channelCategoryHasFocus = it.hasFocus
@@ -756,22 +799,31 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                 .focusGroup().padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(if (vodBrowsing) 10.dp else 18.dp)) {
                 if (vodBrowsing && vodTitle == null) {
-                    Row(Modifier.fillMaxWidth().onFocusChanged {
-                        if (!it.hasFocus && movieSearchOpen) {
-                            movieSearchOpen = false
-                        }
-                    }.focusGroup(), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().focusGroup(), verticalAlignment = Alignment.CenterVertically) {
                         Text(vodCategoryLabel ?: "All $section",
                             fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White,
                             modifier = Modifier.weight(1f))
                         if (vodTitle == null) {
                             if (movieSearchOpen) {
-                                 BasicTextField(movieSearch, { movieSearch = it }, singleLine = true,
-                                     textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
-                                     modifier = Modifier.width(250.dp).focusRequester(movieSearchFocus)
-                                         .onPreviewKeyEvent {
-                                             if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionDown) {
-                                                  movieSearchOpen = false
+                                 BasicTextField(movieSearchDraft, { movieSearchDraft = it }, singleLine = true,
+                                      textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
+                                      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                      keyboardActions = KeyboardActions(onSearch = {
+                                          submitMovieSearch()
+                                          keyboardController?.hide()
+                                      }, onDone = {
+                                          submitMovieSearch()
+                                          keyboardController?.hide()
+                                      }),
+                                      modifier = Modifier.width(250.dp).focusRequester(movieSearchFocus)
+                                          .onPreviewKeyEvent {
+                                              if (it.type == KeyEventType.KeyDown && it.key == Key.Enter) {
+                                                   submitMovieSearch()
+                                                   keyboardController?.hide()
+                                                   true
+                                              } else if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionDown) {
+                                                   submitMovieSearch()
+                                                   movieSearchOpen = false
                                                   scope.launch {
                                                       withFrameNanos { }
                                                       if (area == "content" && vodTitle == null) {
@@ -786,19 +838,32 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                          }
                                          .onFocusChanged { if (it.isFocused) focusedPosterIndex = -1 }
                                         .background(cell, RoundedCornerShape(6.dp)).padding(10.dp))
-                                LaunchedEffect(movieSearchOpen) {
-                                    try { movieSearchFocus.requestFocus() } catch (_: IllegalStateException) { }
+                                LaunchedEffect(movieSearchOpen, movieSearchDraft, movieSearch, state) {
+                                    if (movieSearchOpen && area == "content" && vodTitle == null) {
+                                        withFrameNanos { }
+                                        try { movieSearchFocus.requestFocus() } catch (_: IllegalStateException) { }
+                                    }
                                 }
                             }
                             GuideAction("Search $section", modifier = Modifier.width(56.dp)
                                 .onFocusChanged { if (it.isFocused) focusedPosterIndex = -1 },
                                 icon = Icons.Default.Search, compact = true) {
-                                movieSortOpen = false; movieSearchOpen = !movieSearchOpen
-                                if (!movieSearchOpen) movieSearch = ""
+                                movieSortOpen = false
+                                if (movieSearchOpen) {
+                                    submitMovieSearch()
+                                    movieSearchOpen = false
+                                } else {
+                                    movieSearchDraft = movieSearch
+                                    movieSearchOpen = true
+                                }
                             }
                             GuideAction("Sort $section", modifier = Modifier.width(56.dp).focusRequester(sortButtonFocus)
                                 .onFocusChanged { if (it.isFocused) focusedPosterIndex = -1 },
-                                icon = Icons.Default.Menu, compact = true) { movieSortOpen = !movieSortOpen }
+                                icon = Icons.Default.Menu, compact = true) {
+                                movieSearchOpen = false
+                                movieSearchDraft = movieSearch
+                                movieSortOpen = !movieSortOpen
+                            }
                         }
                     }
                 } else Text(section, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color.White)
@@ -839,10 +904,16 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                         val appendedFocus = remember(section, vodCategory, movieSearch, movieSort) { FocusRequester() }
                         if (loaded == null) {
                             val failure = state as? LoadState.Message
-                            TvStatusPanel(if (failure == null) "Loading $section…" else "Could not load $section",
-                                failure?.text ?: "${vodCategoryLabel ?: "All $section"} • preparing titles",
-                                loading = failure == null,
-                                onRetry = if (failure != null) model::refresh else null,
+                            val loading = state is LoadState.Loading
+                            TvStatusPanel(if (loading) "Loading $section…" else "Could not load $section",
+                                failure?.text ?: if (loading)
+                                    "${vodCategoryLabel ?: "All $section"} • preparing titles"
+                                else "The selected page is no longer available. Retry loading it.",
+                                loading = loading,
+                                onRetry = if (loading) null else {{
+                                    model.loadSection(kind, vodCategory, force = true,
+                                        query = movieSearch.trim(), ordering = movieSort)
+                                }},
                                 retryModifier = Modifier.focusRequester(guideFocus))
                         } else if (vodTitle != null) {
                             val title = vodTitle!!
@@ -1141,7 +1212,7 @@ private fun EpisodePoster(episode: Title, number: Int, modifier: Modifier = Modi
         scale = CardDefaults.scale(focusedScale = 1.04f)) {
         Column {
             Artwork(episode, Modifier.fillMaxWidth().aspectRatio(1.7f))
-            Text("E$number. ${episode.name}", modifier = Modifier.fillMaxWidth().padding(8.dp),
+            Text(episode.name, modifier = Modifier.fillMaxWidth().padding(8.dp),
                 maxLines = 1, fontSize = 14.sp)
         }
     }

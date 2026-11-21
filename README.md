@@ -1,4 +1,4 @@
-# Stalker TV
+# VibeTV
 
 Native Android TV player for users connecting their own Stalker/Ministra IPTV providers. Product name is provisional.
 
@@ -49,7 +49,7 @@ still prevent forwarding portal credentials to a different server.
 ./gradlew :core:test :app:assembleDebug :app:lintDebug
 ```
 
-Install `app/build/outputs/apk/debug/app-debug.apk` on an Android TV emulator or box (Android 8.0 / API 26 or newer), or use Android Studio's Run action. The app appears as **Stalker TV · Demo** in the TV launcher.
+Install `app/build/outputs/apk/debug/app-debug.apk` on an Android TV emulator or box (Android 8.0 / API 26 or newer), or use Android Studio's Run action. The app appears as **VibeTV** in the TV launcher.
 
 For connected UI checks:
 
