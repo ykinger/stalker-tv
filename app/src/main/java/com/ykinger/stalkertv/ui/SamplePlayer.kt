@@ -36,10 +36,9 @@ import com.ykinger.stalkertv.core.PlaybackSource
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Unit) {
+fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, live: Boolean = false, onBack: () -> Unit) {
     val context = LocalContext.current
     var error by remember(source) { mutableStateOf(false) }
-    var playing by remember(source) { mutableStateOf(false) }
     var resumePlayback by remember(source) { mutableStateOf(true) }
     val player =
         remember(context, source) {
@@ -62,12 +61,11 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
         val listener =
             object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    playing = isPlaying
-                    if (BuildConfig.DEBUG && !demo)
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && !demo)
                         Log.d(PORTAL_TAG, "stage=playback.player playing=$isPlaying")
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (BuildConfig.DEBUG && !demo) Log.d(PORTAL_TAG,
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && !demo) Log.d(PORTAL_TAG,
                         "stage=playback.player state=${when (playbackState) {
                             Player.STATE_IDLE -> "idle"
                             Player.STATE_BUFFERING -> "buffering"
@@ -78,7 +76,7 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
                 }
                 override fun onPlayerError(playbackError: PlaybackException) {
                     error = true
-                    if (BuildConfig.DEBUG && !demo) {
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && !demo) {
                         val cause = playbackError.cause
                         val status = (cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
                         Log.w(PORTAL_TAG, "stage=playback.player failure=${playbackError.errorCodeName} " +
@@ -102,11 +100,6 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
     }
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().background(Color.Black)) {
-        Text(
-            source.label + if (demo) " • All demo titles use this sample" else "",
-            modifier = Modifier.padding(12.dp),
-        )
-        if (!demo) Text(if (playing) "Playing" else "Paused or buffering")
         if (error) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("Playback failed. Retry or go back.")
@@ -125,7 +118,7 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
             AndroidView(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 factory = { viewContext ->
-                    RemotePlayerView(viewContext).apply {
+                    RemotePlayerView(viewContext, live).apply {
                         id = R.id.sample_player
                         layoutParams =
                             ViewGroup.LayoutParams(
@@ -134,7 +127,8 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
                             )
                         this.player = player
                         useController = true
-                        controllerAutoShow = true
+                        controllerAutoShow = !live
+                        if (live) setControllerShowTimeoutMs(3_000)
                         setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
                         isFocusable = true
                         isFocusableInTouchMode = true
@@ -154,47 +148,64 @@ fun SamplePlayer(source: PlaybackSource, demo: Boolean = true, onBack: () -> Uni
 
 /** TV remote shortcuts on the focused player surface. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-private class RemotePlayerView(context: Context) : PlayerView(context) {
+private class RemotePlayerView(context: Context, private val live: Boolean) : PlayerView(context) {
     private val focusLogger = ViewTreeObserver.OnGlobalFocusChangeListener { old, new ->
-        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
             "stage=playback.remote focus=${focusTarget(old)}->${focusTarget(new)}")
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (BuildConfig.DEBUG) viewTreeObserver.addOnGlobalFocusChangeListener(focusLogger)
-        findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) viewTreeObserver.addOnGlobalFocusChangeListener(focusLogger)
+        if (live) {
+            setShowRewindButton(false)
+            setShowFastForwardButton(false)
+            setShowPreviousButton(false)
+            setShowNextButton(false)
+            setShowSubtitleButton(false)
+            listOf(androidx.media3.ui.R.id.exo_time, androidx.media3.ui.R.id.exo_progress,
+                androidx.media3.ui.R.id.exo_progress_placeholder,
+                androidx.media3.ui.R.id.exo_center_controls,
+                androidx.media3.ui.R.id.exo_minimal_controls,
+                androidx.media3.ui.R.id.exo_controls_background).forEach { id ->
+                findViewById<View>(id)?.visibility = View.GONE
+            }
+            findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)
+                ?.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        } else findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
             isFocusable = true
             setKeyTimeIncrement(10_000L)
         }
         if (isControllerFullyVisible) {
-            findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+            findViewById<View>(if (live) androidx.media3.ui.R.id.exo_settings
+                else androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
         } else {
             requestFocus()
         }
     }
 
     override fun onDetachedFromWindow() {
-        if (BuildConfig.DEBUG) viewTreeObserver.removeOnGlobalFocusChangeListener(focusLogger)
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) viewTreeObserver.removeOnGlobalFocusChangeListener(focusLogger)
         super.onDetachedFromWindow()
     }
 
     init {
         setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
             val visible = visibility == View.VISIBLE
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=playback.remote controls=${if (visible) "visible" else "hidden"} " +
                     "focus=${focusTarget(findFocus())}")
             if (isAttachedToWindow) {
                 if (visible) {
                     // Focus Play/Pause before the newly visible controller is drawn.
-                    findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+                    findViewById<View>(if (live) androidx.media3.ui.R.id.exo_settings
+                        else androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
                 } else {
                     // A hidden controller cannot handle D-pad input. Return it to the
                     // player surface so the next arrow can reveal the controls again.
                     requestFocus()
                 }
-                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                     "stage=playback.remote focus_restored=${focusTarget(findFocus())}")
             }
         })
@@ -218,16 +229,30 @@ private class RemotePlayerView(context: Context) : PlayerView(context) {
         val reveal = key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
         val toggle = key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER
         if (!seek && !reveal && !toggle) return super.dispatchKeyEvent(event)
+        if (live) {
+            val settings = findViewById<View>(androidx.media3.ui.R.id.exo_settings)
+            if (isControllerFullyVisible && findFocus() !== this) {
+                // Settings and its popup retain ordinary Media3 navigation. Never
+                // pass seek keys from the settings icon to the player surface.
+                if (seek && findFocus() === settings) return true
+                return super.dispatchKeyEvent(event)
+            }
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                showController()
+                settings?.requestFocus()
+            }
+            return true
+        }
         // Visible controls own their D-pad and OK events. In particular, let
         // DefaultTimeBar seek and let each focused Media3 button handle OK.
         if (isControllerFullyVisible && findFocus() !== this) {
-            if (BuildConfig.DEBUG && event.action == KeyEvent.ACTION_DOWN) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && event.action == KeyEvent.ACTION_DOWN) Log.d(PORTAL_TAG,
                 "stage=playback.remote key=controller focus=${focusTarget(findFocus())}")
             return super.dispatchKeyEvent(event)
         }
         if (isControllerFullyVisible && !toggle) return super.dispatchKeyEvent(event)
         if (event.action == KeyEvent.ACTION_DOWN) {
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=playback.remote key=${when {
                     seek -> if (key == KeyEvent.KEYCODE_DPAD_LEFT) "left" else "right"
                     reveal -> if (key == KeyEvent.KEYCODE_DPAD_UP) "up" else "down"

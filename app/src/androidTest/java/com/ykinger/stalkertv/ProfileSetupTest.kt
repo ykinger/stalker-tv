@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.media3.ui.PlayerView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
@@ -13,6 +14,16 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ProfileSetupTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+
+    private fun waitForPlaying() {
+        compose.waitUntil(15_000) {
+            var playing = false
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                playing = compose.activity.findViewById<PlayerView>(R.id.sample_player)?.player?.isPlaying == true
+            }
+            playing
+        }
+    }
 
     private fun editField(label: String, value: String) {
         compose.onNodeWithContentDescription("Edit $label").performClick()
@@ -109,7 +120,7 @@ class ProfileSetupTest {
         compose.onNodeWithText("Sample Feature").performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.onNodeWithText("Play movie").assertExists()
         compose.onNodeWithText("Play movie").performSemanticsAction(SemanticsActions.OnClick) { it() }
-        compose.waitUntil(15000) { compose.onAllNodesWithText("Playing").fetchSemanticsNodes().isNotEmpty() }
+        waitForPlaying()
         input.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Shows").performSemanticsAction(SemanticsActions.OnClick) { it() }
@@ -119,7 +130,7 @@ class ProfileSetupTest {
             compose.onAllNodesWithText("A New Beginning").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("A New Beginning").performSemanticsAction(SemanticsActions.OnClick) { it() }
-        compose.waitUntil(15000) { compose.onAllNodesWithText("Playing").fetchSemanticsNodes().isNotEmpty() }
+        waitForPlaying()
         input.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.waitForIdle()
         compose.onNodeWithContentDescription("TV").performSemanticsAction(SemanticsActions.OnClick) { it() }
@@ -127,9 +138,7 @@ class ProfileSetupTest {
         compose.onNodeWithText("Demo Channel 1").performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitUntil(15000) { compose.onAllNodesWithText("Connecting…").fetchSemanticsNodes().isEmpty() }
         compose.onNode(hasText("Demo Channel 1") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
-        compose.waitUntil(15000) {
-            compose.onAllNodesWithText("Playing").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForPlaying()
         compose.activityRule.scenario.recreate()
         compose.waitUntil(15_000) {
             compose.onAllNodesWithText("Select a channel").fetchSemanticsNodes().isNotEmpty()

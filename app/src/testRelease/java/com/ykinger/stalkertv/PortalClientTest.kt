@@ -10,6 +10,7 @@ import com.ykinger.stalkertv.ui.PortalCounts
 import com.ykinger.stalkertv.ui.VerifiedPortal
 import com.ykinger.stalkertv.ui.StalkerContentRepository
 import com.ykinger.stalkertv.ui.movieFileLinkCommand
+import com.ykinger.stalkertv.ui.selectedEpisodeCommand
 import com.ykinger.stalkertv.ui.posterAddress
 import com.ykinger.stalkertv.ui.playbackAddress
 import com.ykinger.stalkertv.ui.portalErrorKind
@@ -493,6 +494,39 @@ class PortalClientTest {
             val episodeRequest = server.takeRequest().requestUrl!!
             assertEquals("301", episodeRequest.queryParameter("season_id"))
         } finally { server.shutdown() }
+    }
+
+    @Test fun selectedEpisodeUsesOnlyItsReturnedCommand() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"js":[{"id":"*","title":"All"}]}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Show","is_series":1}],"total_items":1}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"301","name":"Season","is_season":true}],"total_items":1}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"401","name":"Episode"}],"total_items":1}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"501","video_id":"201","is_file":true,"cmd":"selected-command"}]}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"cmd":"http://example.test/stream.m3u8"}}"""))
+            val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
+            val repository = StalkerContentRepository(profile, "demo-token")
+            val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
+            val season = (repository.seasons(show.id) as ProviderResult.Success).value.single()
+            val episode = (repository.episodes(show.id, season.id, 1) as ProviderResult.Success).value.episodes.single()
+            assertEquals("http://example.test/stream.m3u8",
+                (repository.resolve(episode.id) as ProviderResult.Success).value.uri)
+            repeat(4) { server.takeRequest() }
+            val detail = server.takeRequest().requestUrl!!
+            assertEquals("201", detail.queryParameter("movie_id"))
+            assertEquals("301", detail.queryParameter("season_id"))
+            assertEquals("401", detail.queryParameter("episode_id"))
+            val link = server.takeRequest().requestUrl!!
+            assertEquals("/media/file_501.mpg", link.queryParameter("cmd"))
+            assertEquals("0", link.queryParameter("force_ch_link_check"))
+            assertEquals(null, link.queryParameter("series"))
+        } finally { server.shutdown() }
+        assertEquals(null, selectedEpisodeCommand(JSONObject("""{"data":[{"id":"402","cmd":"other-command"}]}"""), "401", "201"))
+        assertEquals("/media/file_501.mpg", selectedEpisodeCommand(JSONObject("""{"data":[{"id":"501","video_id":"201","is_file":true,"cmd":"file-command"}]}"""), "401", "201"))
+        assertEquals(null, selectedEpisodeCommand(JSONObject("""{"data":[{"id":"501","video_id":"202","is_file":true,"cmd":"other-show"}]}"""), "401", "201"))
+        assertEquals(null, selectedEpisodeCommand(JSONObject("""{"data":[{"id":"501","video_id":"201","is_file":true,"cmd":"one"},{"id":"502","video_id":"201","is_file":true,"cmd":"two"}]}"""), "401", "201"))
     }
 
     @Test fun unsupportedSeriesResponseDoesNotBecomeAConnectionError() = runBlocking {

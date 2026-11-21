@@ -470,8 +470,10 @@ private fun Settings(scenario: MockScenario, onChange: (MockScenario) -> Unit) {
 @Composable
 fun <T> StateContent(state: LoadState<T>, retry: () -> Unit, content: @Composable (T) -> Unit) {
     when (state) {
-        LoadState.Loading -> MessagePanel("Loading sample content…", "Refresh", retry)
-        is LoadState.Message -> MessagePanel(state.text, "Retry", retry)
+        LoadState.Loading -> TvStatusPanel("Loading sample content…",
+            "Preparing your offline catalogue", loading = true)
+        is LoadState.Message -> TvStatusPanel("Could not load content", state.text,
+            loading = false, onRetry = retry)
         is LoadState.Ready -> content(state.value)
     }
 }

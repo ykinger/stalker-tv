@@ -53,6 +53,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okio.Buffer
 
 internal const val PORTAL_TAG = "StalkerPortal"
+// Keep the debug build usable without emitting portal, player, or input diagnostics.
+internal const val DIAGNOSTIC_LOGGING = true
 
 internal data class PortalProfile(val serial: String, val host: String, val mac: String, val name: String = host)
 
@@ -225,7 +227,7 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
             val client = if (type == "stb") container.handshakeClient else container.portalClient
             client.newCall(request).execute().use { response ->
                 val status = response.code
-                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                     "stage=$stage http=$status hop=$hop route=${routeKind(address)} " +
                         "content=${when {
                             response.header("Content-Type")?.startsWith("application/json", ignoreCase = true) == true -> "json"
@@ -237,7 +239,7 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                     val location = response.header("Location")
                     check(hop < 5) { "Too many portal redirects." }
                     address = portalRedirect(address, location)
-                    if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                         "stage=$stage redirectHop=${hop + 1} targetRoute=${routeKind(address)}")
                     return@repeat
                 }
@@ -254,9 +256,9 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                 check(buffer.size <= 1024 * 1024) { "Portal response is too large." }
                 val body = buffer.readByteArray()
                 val response = String(body, Charsets.UTF_8)
-                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage bytes=${body.size} hop=$hop")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage bytes=${body.size} hop=$hop")
                 if (!response.trimStart().startsWith("{")) {
-                    if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage format=nonJson hop=$hop")
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage format=nonJson hop=$hop")
                     throw PortalResponseFormatException()
                 }
                 val result = try {
@@ -265,7 +267,7 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                     if (stage == "stb.handshake") throw PortalResponseFormatException()
                     throw error
                 }
-                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage parsed=${result.javaClass.simpleName}")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage parsed=${result.javaClass.simpleName}")
                 return result
             }
         }
@@ -273,7 +275,7 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: Exception) {
-        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
         throw error
     }
 }
@@ -282,18 +284,18 @@ internal fun testPortal(profile: PortalProfile, container: AppContainer): Verifi
     var lastFailure: Exception? = null
     for ((index, candidate) in portalApiCandidates(profile.host).withIndex()) {
         val apiProfile = profile.copy(host = candidate)
-        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
             "stage=portal.discovery candidate=$index route=${routeKind(URI(candidate))} trying=true")
         try {
             val session = verifyPortal(apiProfile, container)
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=portal.discovery candidate=$index verified=true")
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=portal.discovery candidate=$index verified=true")
             return VerifiedPortal(candidate, session.token, session.watchdogSeconds)
         } catch (error: PortalResponseFormatException) {
             lastFailure = error
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=portal.discovery candidate=$index rejected=invalidResponse")
         } catch (error: PortalHttpException) {
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=portal.discovery candidate=$index rejected=http status=${error.status}")
             if (error.status !in listOf(404, 405, 500, 502, 503, 504)) throw error
             lastFailure = error
@@ -312,13 +314,13 @@ internal fun portalCounts(profile: PortalProfile, verified: VerifiedPortal,
                 (if (kind == "itv") "&sortby=number&fav=0&search=" else "") +
                 "&JsHttpRequest=1-xml", verified.token, container)
         (result as? JSONObject)?.optInt("total_items", -1)?.takeIf { it >= 0 }.also {
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=portal.counts kind=$kind totalKnown=${it != null}")
         }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: Exception) {
-        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG,
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG,
             "stage=portal.counts kind=$kind failure=${error.javaClass.simpleName}")
         null
     }
@@ -334,10 +336,10 @@ private fun verifyPortal(profile: PortalProfile, container: AppContainer): Porta
             ?: "type=stb&action=handshake&token=&JsHttpRequest=1-xml").getString("token")
             .also { check(it.isNotBlank() && it.none { char -> char == '\r' || char == '\n' }) }
     } catch (error: Exception) {
-        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=stb.handshake.validate failure=${error.javaClass.simpleName}")
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=stb.handshake.validate failure=${error.javaClass.simpleName}")
         throw error
     }
-    if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=stb.handshake.validate tokenPresent=true")
+    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=stb.handshake.validate tokenPresent=true")
     val serialParam = if (profile.serial.isBlank()) "" else "&sn=${URLEncoder.encode(profile.serial, "UTF-8")}"
     val profileResult = try {
         val profileQuery = identity?.let { capturedProfileQuery(it, System.currentTimeMillis() / 1000) }
@@ -345,7 +347,7 @@ private fun verifyPortal(profile: PortalProfile, container: AppContainer): Porta
                 "&stb_type=MAG250&hw_version=1.7-BD-00&image_version=218&client_type=STB" +
                 "&JsHttpRequest=1-xml"
         val profileResult = request(profileQuery, token)
-        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
             "stage=stb.get_profile.validate hasId=${profileResult.has("id")} " +
                 "hasError=${profileResult.has("error")} status=${profileResult.optInt("status", -1)} " +
                 "messageKind=${when (profileResult.optString("msg")) {
@@ -363,7 +365,7 @@ private fun verifyPortal(profile: PortalProfile, container: AppContainer): Porta
         }
         profileResult
     } catch (error: Exception) {
-        if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=stb.get_profile.validate failure=${error.javaClass.simpleName}")
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=stb.get_profile.validate failure=${error.javaClass.simpleName}")
         throw error
     }
     return PortalSession(token, profileResult.optInt("watchdog_timeout", 0).takeIf { it in 15..3600 })
@@ -428,7 +430,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     if (store.selectedIndex() != index) store.select(index)
                     result
                 }
-                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=playlist.connect verified=true")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=playlist.connect verified=true")
                 sessionToken = verified.token
                 sessionApiHost = verified.apiHost
                 sessionWatchdogSeconds = verified.watchdogSeconds
@@ -438,7 +440,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                 selectedProfile = null
                 message = if (error is PortalHttpException && error.status == 429)
                     "The portal is limiting requests (HTTP 429). Wait before retrying."
@@ -465,7 +467,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
             profiles = saved
             if (index in saved.indices) connect(saved[index])
         } catch (error: Exception) {
-            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=profile.store.load failure=${error.javaClass.simpleName}")
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=profile.store.load failure=${error.javaClass.simpleName}")
             message = "Saved playlist could not be read. Add it again."
         }
         finally { loadingProfiles = false }
@@ -493,7 +495,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (error: Exception) {
-                if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=watchdog.get_events failure=${error.javaClass.simpleName}")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=watchdog.get_events failure=${error.javaClass.simpleName}")
             }
         }
     }
@@ -573,9 +575,13 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         }
         "connecting" -> Box(Modifier.fillMaxSize().background(settingsBackground), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(if (busy) "Connecting to playlist…" else message, color = Color.White)
+                TvStatusPanel(if (busy) "Connecting to playlist…" else "Could not connect",
+                    if (busy) "Checking your portal and preparing the guide" else message,
+                    loading = busy, modifier = Modifier.width(480.dp), shape = TvStatusShape.NONE,
+                    retryLabel = "Retry connection",
+                    onRetry = if (busy) null else { { reconnectProfile?.let(::connect) } },
+                    retryModifier = Modifier.focusRequester(firstFocus))
                 if (!busy) {
-                    Button(onClick = { reconnectProfile?.let(::connect) }, modifier = Modifier.focusRequester(firstFocus)) { Text("Retry connection") }
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }
                     Button(onClick = { screen = "demo" }) { Text("Open offline demo") }
                 }
@@ -586,7 +592,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(22.dp)) {
                 Text("STALKER TV", fontSize = 30.sp, color = settingsBlue)
-                if (loadingProfiles) Text("Loading playlists…", color = settingsMuted)
+                if (loadingProfiles) TvInlineStatus("Loading playlists…", loading = true)
                 else if (profiles.isEmpty()) Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Stalker TV does not provide any content", fontSize = 25.sp, color = Color.White)
                     Text("Add your own playlist to start watching", color = settingsMuted)
@@ -614,7 +620,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 Text("STALKER TV", color = settingsBlue, fontSize = 16.sp)
                 Text("Playlists", color = Color.White, fontSize = 32.sp)
                 Spacer(Modifier.height(8.dp))
-                if (loadingProfiles) Text("Loading playlists…", color = settingsMuted)
+                if (loadingProfiles) TvInlineStatus("Loading playlists…", loading = true)
                 else if (profiles.isEmpty()) Text("No playlists saved.", color = Color(0xFFD0DADC))
                 profiles.forEachIndexed { index, profile ->
                     Button(enabled = !busy, onClick = { edit(index) },
@@ -700,7 +706,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                 message = "Playlist saved securely."
                                 reconnect = wasSelected && credentialsChanged
                             } catch (error: Exception) {
-                                if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=profile.store.edit failure=${error.javaClass.simpleName}")
+                                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=profile.store.edit failure=${error.javaClass.simpleName}")
                                 message = "Could not save playlist. Please retry."
                             } finally { busy = false }
                             if (reconnect) connect(candidate)
@@ -785,7 +791,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                 val verified = testPortal(candidate, container)
                                 stage = "profile.store.save"
                                 store.save(updated, updated.lastIndex)
-                                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=$stage saved=true")
+                                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage saved=true")
                                 stage = "portal.counts"
                                 verified to portalCounts(candidate, verified, container)
                             }
@@ -801,21 +807,21 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                         } catch (cancelled: kotlinx.coroutines.CancellationException) {
                             throw cancelled
                         } catch (error: java.net.SocketTimeoutException) {
-                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Connection timed out. Check the host and retry."
                         } catch (error: java.net.ConnectException) {
-                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Cannot connect. Check the host and that Docker is running."
                         } catch (error: PortalResponseFormatException) {
-                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "The portal returned non-JSON data, not a Stalker API response. Check the provider's portal address."
                         } catch (error: PortalHttpException) {
-                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = if (error.status == 429)
                                 "The portal is limiting requests (HTTP 429). Wait before retrying."
                             else "Connection failed (HTTP ${error.status}). Check the provider's portal response."
                         } catch (error: Exception) {
-                            if (BuildConfig.DEBUG) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
+                            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Connection or save failed. Check registration, host, and portal response."
                         } finally { busy = false }
                     }
@@ -838,7 +844,7 @@ private fun ProfileField(label: String, value: String, enabled: Boolean, modifie
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(editing) {
         if (editing) {
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=keyboard_request")
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=keyboard_request")
             editorFocus.requestFocus()
             keyboard?.show()
         }
@@ -850,20 +856,20 @@ private fun ProfileField(label: String, value: String, enabled: Boolean, modifie
         }
     }
     BackHandler(editing) {
-        if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=back")
+        if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=back")
         editing = false; returnAfterEditing = true; keyboard?.hide()
     }
     Text(label, color = settingsMuted)
     Box(modifier.fillMaxWidth().focusRequester(fieldFocus)
         .onFocusChanged {
             focused = it.hasFocus
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=profile.input field=$label event=field_focus active=${it.hasFocus} editing=$editing")
             if (!it.hasFocus) editing = false
         }
         .semantics { contentDescription = "Edit $label" }
         .clickable(enabled = enabled) {
-            if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=activate")
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=activate")
             editing = true
         }
         .background(if (focused) Color(0xFFE0E3E4) else Color(0xFF292E31),
@@ -871,12 +877,12 @@ private fun ProfileField(label: String, value: String, enabled: Boolean, modifie
         .padding(16.dp)) {
         if (editing) {
             BasicTextField(value = value, onValueChange = {
-                if (BuildConfig.DEBUG) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=text_change")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=profile.input field=$label event=text_change")
                 onChange(it)
             }, enabled = enabled,
                 singleLine = true, textStyle = TextStyle(color = Color.Black),
                 modifier = Modifier.fillMaxWidth().focusRequester(editorFocus).onFocusChanged {
-                    if (BuildConfig.DEBUG) Log.d(PORTAL_TAG,
+                    if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                         "stage=profile.input field=$label event=editor_focus active=${it.isFocused}")
                 })
         } else {
