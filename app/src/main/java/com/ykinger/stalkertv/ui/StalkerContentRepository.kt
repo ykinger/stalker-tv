@@ -21,7 +21,10 @@ internal class StalkerContentRepository(
     private val profile: PortalProfile,
     private val token: String,
     private val container: AppContainer = AppContainer(),
-) : PagedContentRepository {
+    private val categoryKinds: Map<String, ContentKind> = emptyMap(),
+) : PagedContentRepository, VodCategoryKindSource {
+    override fun categoryKind(categoryId: String): ContentKind? = categoryKinds[categoryId]
+
     private var titles = emptyList<Title>()
     private var commands = emptyMap<String, String>()
     private var episodeParents = emptyMap<String, Pair<String, String>>()
@@ -69,7 +72,8 @@ internal class StalkerContentRepository(
             val category = URLEncoder.encode(categoryId ?: "*", "UTF-8")
             val filter = if (kind == ContentKind.CHANNEL) "genre" else "category"
             val extras = if (kind == ContentKind.CHANNEL) "&sortby=number&fav=0&search=" else
-                (if (sort.isBlank()) "" else "&sortby=$sort") +
+                (if (categoryId == null) "" else if (kind == ContentKind.SERIES) "&is_series=1" else "&is_series=0") +
+                    (if (sort.isBlank()) "" else "&sortby=$sort") +
                     (if (search.isBlank()) "" else "&search=${URLEncoder.encode(search.trim(), "UTF-8")}")
             val response = portalRequest(profile,
                 "type=$type&action=get_ordered_list&$filter=$category&p=$page$extras&JsHttpRequest=1-xml", token, container)
@@ -100,7 +104,7 @@ internal class StalkerContentRepository(
                 Title(id, row.optString("name").ifBlank { "Title $rawId" }, itemKind, itemCategory,
                     row.optString("description").ifBlank { null }, artwork,
                     row.optString("year").toIntOrNull())
-            }
+            }.filter { kind == ContentKind.CHANNEL || categoryId != null || it.kind == kind }
             titles = (titles + pageTitles).distinctBy { it.id }
             val total = result.optInt("total_items", -1)
             val pageSize = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
@@ -108,7 +112,11 @@ internal class StalkerContentRepository(
                 (if (total >= 0) page.toLong() * pageSize < total else rows.length() >= pageSize)
             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=catalogue.$type page=$page rows=${rows.length()} titles=${pageTitles.size} total=$total hasMore=$hasMore")
-            ProviderResult.Success(Catalogue(categories, pageTitles, hasMore, total.takeIf { it >= 0 }))
+            // The portal ignores is_series for All, so its total is combined and
+            // cannot be shown as a Movies or Shows total. Selected categories do
+            // honor the filter and retain their reported total.
+            val visibleTotal = total.takeIf { it >= 0 && (kind == ContentKind.CHANNEL || categoryId != null) }
+            ProviderResult.Success(Catalogue(categories, pageTitles, hasMore, visibleTotal))
         }
 
     override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = safely("playback.resolve") {

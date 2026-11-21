@@ -43,7 +43,7 @@ internal enum class TvStatusShape { POSTERS, GUIDE, NONE }
 internal fun TvStatusPanel(title: String, detail: String? = null, loading: Boolean,
     modifier: Modifier = Modifier, shape: TvStatusShape = TvStatusShape.POSTERS,
     retryLabel: String = "Retry", onRetry: (() -> Unit)? = null,
-    retryModifier: Modifier = Modifier) {
+    retryModifier: Modifier = Modifier, progress: Float? = null) {
     val retryFocus = remember { FocusRequester() }
     LaunchedEffect(loading) {
         if (!loading && onRetry != null) {
@@ -58,6 +58,7 @@ internal fun TvStatusPanel(title: String, detail: String? = null, loading: Boole
         Box(Modifier.width(48.dp).height(4.dp).alpha(pulse).background(statusAccent, RoundedCornerShape(2.dp)))
         Text(title, color = Color.White, fontSize = 23.sp)
         detail?.let { Text(it, color = statusMuted, fontSize = 15.sp) }
+        progress?.let { TvProgressBar(it) }
         if (loading) {
             Spacer(Modifier.height(6.dp))
             when (shape) {
@@ -72,6 +73,14 @@ internal fun TvStatusPanel(title: String, detail: String? = null, loading: Boole
         } else if (onRetry != null) {
             Button(onClick = onRetry, modifier = retryModifier.focusRequester(retryFocus)) { Text(retryLabel) }
         }
+    }
+}
+
+@Composable
+internal fun TvProgressBar(progress: Float, modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxWidth().height(6.dp).background(statusSurface, RoundedCornerShape(3.dp))) {
+        Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp)
+            .background(statusAccent, RoundedCornerShape(3.dp)))
     }
 }
 

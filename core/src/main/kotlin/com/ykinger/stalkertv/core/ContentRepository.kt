@@ -68,6 +68,12 @@ interface ContentRepository {
     suspend fun resolve(id: String): ProviderResult<PlaybackSource>
 }
 
+/** Optional exact VOD category classification supplied with a persisted portal scan. */
+interface VodCategoryKindSource {
+    /** Movie/show membership observed for this category, or null when it is unclassified. */
+    fun categoryKind(categoryId: String): ContentKind?
+}
+
 /** Optional on-demand browsing capability; the offline demo supplies a full catalogue. */
 interface PagedContentRepository : ContentRepository {
     suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue>

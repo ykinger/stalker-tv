@@ -33,10 +33,10 @@ fun <T> ProviderResult<T>.toLoadState(): LoadState<T> =
 
 class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
     private data class LoadedPage(val catalogue: Catalogue, val page: Int)
-    // Movies and Shows are two views over the same VOD pages.
+    // Shows use a different server query; never reuse a Movies page for Shows.
     private data class PageKey(val kind: ContentKind, val category: String?, val search: String, val sort: String)
     private fun pageKey(section: ContentKind, category: String?, search: String, sort: String) =
-        PageKey(if (section == ContentKind.SERIES) ContentKind.MOVIE else section, category, search, sort)
+        PageKey(section, category, search, sort)
     private val loadedPages = mutableMapOf<PageKey, LoadedPage>()
     private var displayedPage: Pair<PageKey, Catalogue>? = null
     private val _scenario = MutableStateFlow(MockScenario.SUCCESS)
@@ -142,7 +142,9 @@ class CatalogueViewModel(private val container: AppContainer) : ViewModel() {
                         val incoming = result.value
                         val merged = (latest.titles + incoming.titles).distinctBy { it.id }
                         val updated = latest.copy(titles = merged,
-                            hasMore = incoming.hasMore && merged.size > latest.titles.size)
+                            // An unfiltered All page can contain only the other
+                            // VOD kind. Keep paging even when this page adds no rows.
+                            hasMore = incoming.hasMore)
                         displayedPage = pageKey(kind, categoryId, search, sort) to updated
                         _state.value = LoadState.Ready(updated)
                         if (kind != ContentKind.CHANNEL && categoryId == null && !incoming.hasMore)

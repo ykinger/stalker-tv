@@ -14,6 +14,10 @@ import com.ykinger.stalkertv.ui.selectedEpisodeCommand
 import com.ykinger.stalkertv.ui.posterAddress
 import com.ykinger.stalkertv.ui.playbackAddress
 import com.ykinger.stalkertv.ui.portalErrorKind
+import com.ykinger.stalkertv.ui.scanVodCategoryKinds
+import com.ykinger.stalkertv.ui.classifyVodCategory
+import com.ykinger.stalkertv.ui.encodeCategoryKinds
+import com.ykinger.stalkertv.ui.decodeCategoryKinds
 import com.ykinger.stalkertv.ui.CapturedIdentity
 import com.ykinger.stalkertv.ui.capturedHandshakeQuery
 import com.ykinger.stalkertv.ui.capturedProfileQuery
@@ -38,6 +42,48 @@ import kotlinx.coroutines.runBlocking
 
 /** JVM contract tests run in release so Android Log's debug stubs are never invoked. */
 class PortalClientTest {
+    @Test fun categoryScanClassifiesFirstPagesAndReportsProgress() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"js":[
+                {"id":"*","title":"All"},{"id":"10","title":"Mixed"},
+                {"id":"20","title":"Shows"},{"id":"30","title":"Empty"}]}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[
+                {"is_series":"0"},{"is_series":"0"},{"is_series":"1"}]}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"is_series":"1"}]}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[]}}"""))
+            val profile = PortalProfile("serial", server.url("/server/load.php").toString(),
+                "00:1A:79:00:00:01")
+            val verified = VerifiedPortal(profile.host, "demo-token", null)
+            val progress = mutableListOf<Pair<Int, Int>>()
+
+            val result = scanVodCategoryKinds(profile, verified, AppContainer()) { done, total ->
+                progress += done to total
+            }
+
+            assertEquals(mapOf("10" to ContentKind.MOVIE, "20" to ContentKind.SERIES), result)
+            assertEquals(listOf(0 to 3, 1 to 3, 2 to 3, 3 to 3), progress)
+            assertEquals("get_categories", server.takeRequest().requestUrl?.queryParameter("action"))
+            listOf("10", "20", "30").forEach { category ->
+                val request = server.takeRequest().requestUrl!!
+                assertEquals(category, request.queryParameter("category"))
+                assertEquals("1", request.queryParameter("p"))
+                assertEquals(null, request.queryParameter("is_series"))
+            }
+        } finally { server.shutdown() }
+    }
+
+    @Test fun categoryKindSerializationKeepsOnlyMovieAndShowLabels() {
+        val encoded = encodeCategoryKinds(mapOf("10" to ContentKind.MOVIE,
+            "20" to ContentKind.SERIES, "30" to ContentKind.CHANNEL))
+        assertEquals(mapOf("10" to ContentKind.MOVIE, "20" to ContentKind.SERIES),
+            decodeCategoryKinds(encoded))
+        assertEquals(null, classifyVodCategory(JSONArray()))
+        assertEquals(ContentKind.SERIES, classifyVodCategory(JSONArray(
+            """[{"is_series":0},{"is_series":1}]""")))
+    }
+
     @Test fun vodApiGzipIsDecompressedBeforeParsingCategories() {
         val server = MockWebServer()
         server.start()
@@ -78,6 +124,7 @@ class PortalClientTest {
                 val vod = server.takeRequest().requestUrl!!
                 assertEquals("vod", vod.queryParameter("type"))
                 assertEquals("*", vod.queryParameter("category"))
+                assertEquals(null, vod.queryParameter("is_series"))
                 assertEquals("1", vod.queryParameter("p"))
             }
         } finally { server.shutdown() }
@@ -436,32 +483,70 @@ class PortalClientTest {
         try {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"*","title":"All"}]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"Film","pic":"/posters/film.jpg","screenshot_uri":"/frames/film.jpg"},{"id":"2","name":"Show","is_series":1,"pic":"","screenshot_uri":"/frames/show.jpg"}],"total_items":2}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"Film","pic":"/posters/film.jpg","screenshot_uri":"/frames/film.jpg"},{"id":"2","name":"Show","is_series":1,"pic":"","screenshot_uri":"/frames/show.jpg"}],"total_items":2}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
             val repository = StalkerContentRepository(profile, "demo-token")
-            val titles = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value.titles
-            assertEquals(server.url("/posters/film.jpg").toString(), titles[0].artworkKey)
-            assertEquals(server.url("/frames/show.jpg").toString(), titles[1].artworkKey)
+            val movie = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value.titles.single()
+            val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
+            assertEquals(server.url("/posters/film.jpg").toString(), movie.artworkKey)
+            assertEquals(server.url("/frames/show.jpg").toString(), show.artworkKey)
         } finally { server.shutdown() }
     }
 
-    @Test fun movieAndShowPagesShareCategoriesWithinASession() = runBlocking {
+    @Test fun allMovieAndShowPagesShareCategoriesAndFilterMixedRowsLocally() = runBlocking {
         val server = MockWebServer()
         server.start()
         try {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"*","title":"All"}]}"""))
-            repeat(2) {
-                server.enqueue(MockResponse().setBody(
-                    """{"js":{"data":[{"id":"1","name":"Example","is_series":0}],"total_items":1,"max_page_items":14}}"""))
-            }
+            repeat(2) { server.enqueue(MockResponse().setBody(
+                """{"js":{"data":[{"id":"1","name":"Film","is_series":0},{"id":"2","name":"Show","is_series":1}],"total_items":200,"max_page_items":14}}""")) }
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
             val repository = StalkerContentRepository(profile, "demo-token")
-            assertEquals(1, (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value.categories.size)
-            assertEquals(1, (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.categories.size)
+            val movies = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value
+            val shows = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value
+            assertEquals(listOf("Film"), movies.titles.map { it.name })
+            assertEquals(listOf("Show"), shows.titles.map { it.name })
+            assertEquals(null, movies.totalItems)
+            assertEquals(null, shows.totalItems)
+            assertEquals(true, movies.hasMore)
+            assertEquals(true, shows.hasMore)
             assertEquals(3, server.requestCount)
             assertEquals("/server/load.php?type=vod&action=get_categories&JsHttpRequest=1-xml", server.takeRequest().path)
             assertEquals("/server/load.php?type=vod&action=get_ordered_list&category=*&p=1&JsHttpRequest=1-xml",
                 server.takeRequest().path)
             assertEquals("/server/load.php?type=vod&action=get_ordered_list&category=*&p=1&JsHttpRequest=1-xml",
+                server.takeRequest().path)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun selectedShowCategorySendsSeriesFilterWithOrdering() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Hindi | Comedy"}]}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Example","is_series":1}],"total_items":1}}"""))
+            val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
+            val repository = StalkerContentRepository(profile, "demo-token")
+            assertEquals(1, (repository.loadPage(ContentKind.SERIES, "42", 1, "", "added")
+                as ProviderResult.Success).value.titles.size)
+            server.takeRequest() // categories, cached for subsequent pages
+            assertEquals("/server/load.php?type=vod&action=get_ordered_list&category=42&p=1&is_series=1&sortby=added&JsHttpRequest=1-xml",
+                server.takeRequest().path)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun selectedMovieCategorySendsSeriesFilterWithOrderingAndSearch() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Hindi | Comedy"}]}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Example","is_series":0}],"total_items":1}}"""))
+            val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
+            val repository = StalkerContentRepository(profile, "demo-token")
+            assertEquals(1, (repository.loadPage(ContentKind.MOVIE, "42", 1, "Hindi comedy", "added")
+                as ProviderResult.Success).value.titles.size)
+            server.takeRequest() // categories
+            assertEquals("/server/load.php?type=vod&action=get_ordered_list&category=42&p=1&is_series=0&sortby=added&search=Hindi+comedy&JsHttpRequest=1-xml",
                 server.takeRequest().path)
         } finally { server.shutdown() }
     }

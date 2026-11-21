@@ -48,6 +48,7 @@ import org.json.JSONException
 import com.ykinger.stalkertv.BuildConfig
 import com.ykinger.stalkertv.AppContainer
 import com.ykinger.stalkertv.TvApplication
+import com.ykinger.stalkertv.core.ContentKind
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okio.Buffer
@@ -304,7 +305,7 @@ internal fun testPortal(profile: PortalProfile, container: AppContainer): Verifi
     throw lastFailure ?: PortalResponseFormatException()
 }
 
-/** Read reported totals from page one only; VOD does not report a movie/show split. */
+/** Read the server-reported totals from each filtered first page. */
 internal fun portalCounts(profile: PortalProfile, verified: VerifiedPortal,
     container: AppContainer): PortalCounts {
     val apiProfile = profile.copy(host = verified.apiHost)
@@ -387,6 +388,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as TvApplication).container }
     val store = remember { ProfileStore(context) }
+    val categoryStore = remember { VodCategoryKindStore(context) }
     var profiles by remember { mutableStateOf<List<PortalProfile>>(emptyList()) }
     var loadingProfiles by remember { mutableStateOf(true) }
     var screen by remember { mutableStateOf("landing") }
@@ -399,7 +401,12 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     var sessionToken by remember { mutableStateOf<String?>(null) }
     var sessionApiHost by remember { mutableStateOf<String?>(null) }
     var sessionWatchdogSeconds by remember { mutableStateOf<Int?>(null) }
+    var sessionCategoryKinds by remember { mutableStateOf<Map<String, ContentKind>>(emptyMap()) }
+    var scanningCategories by remember { mutableStateOf(false) }
+    var scannedCategories by remember { mutableIntStateOf(0) }
+    var totalCategories by remember { mutableIntStateOf(0) }
     var reconnectProfile by remember { mutableStateOf<PortalProfile?>(null) }
+    var reconnectRefreshCategories by remember { mutableStateOf(false) }
     var processedCounts by remember { mutableStateOf<PortalCounts?>(null) }
     var processedName by remember { mutableStateOf("") }
     var editingIndex by remember { mutableIntStateOf(-1) }
@@ -411,12 +418,34 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     val firstFocus = remember { FocusRequester() }
     // A newly created activity starts at Home, not a restored player/details route.
     val homeInstance = remember { java.util.UUID.randomUUID().toString() }
-    fun connect(profile: PortalProfile) {
+    /** Replace the map only after every category probe completes successfully. */
+    suspend fun scanAndStoreCategoryKinds(profile: PortalProfile,
+        verified: VerifiedPortal): Map<String, ContentKind> {
+        scanningCategories = true
+        scannedCategories = 0
+        totalCategories = 0
+        return try {
+            val scanned = scanVodCategoryKinds(profile, verified, container) { done, total ->
+                scannedCategories = done
+                totalCategories = total
+            }
+            withContext(Dispatchers.IO) { categoryStore.save(profile, scanned) }
+            scanned
+        } finally {
+            scanningCategories = false
+        }
+    }
+    fun connect(profile: PortalProfile, refreshCategoryMap: Boolean = false) {
         selectedProfile = profile
         sessionToken = null
         sessionApiHost = null
         sessionWatchdogSeconds = null
+        sessionCategoryKinds = emptyMap()
+        scanningCategories = false
+        scannedCategories = 0
+        totalCategories = 0
         reconnectProfile = profile
+        reconnectRefreshCategories = refreshCategoryMap
         busy = true
         screen = "connecting"
         message = "Connecting…"
@@ -431,6 +460,11 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     result
                 }
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=playlist.connect verified=true")
+                val kinds = if (refreshCategoryMap) {
+                    stage = "vod.category_scan"
+                    scanAndStoreCategoryKinds(profile, verified)
+                } else withContext(Dispatchers.IO) { categoryStore.load(profile) }.orEmpty()
+                sessionCategoryKinds = kinds
                 sessionToken = verified.token
                 sessionApiHost = verified.apiHost
                 sessionWatchdogSeconds = verified.watchdogSeconds
@@ -445,7 +479,10 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 message = if (error is PortalHttpException && error.status == 429)
                     "The portal is limiting requests (HTTP 429). Wait before retrying."
                 else "Connection failed. Check the host, registration and server, then retry."
-            } finally { busy = false }
+            } finally {
+                scanningCategories = false
+                busy = false
+            }
         }
     }
     fun edit(index: Int) {
@@ -519,8 +556,9 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
     val connectedToken = sessionToken
     val activeApiHost = sessionApiHost
     if (screen == "home" && connectedProfile != null && connectedToken != null && activeApiHost != null) {
-        val repository = remember(connectedProfile, connectedToken, activeApiHost) {
-            StalkerContentRepository(connectedProfile.copy(host = activeApiHost), connectedToken, container)
+        val repository = remember(connectedProfile, connectedToken, activeApiHost, sessionCategoryKinds) {
+            StalkerContentRepository(connectedProfile.copy(host = activeApiHost), connectedToken, container,
+                sessionCategoryKinds)
         }
         val container = remember(repository) { com.ykinger.stalkertv.AppContainer(repository) }
         key(homeInstance) {
@@ -539,8 +577,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                 Text("Playlist saved · Portal catalogue", fontSize = 21.sp, color = Color.White)
                 Text("Channels: ${processedCounts?.channels ?: "Count unavailable"}", color = Color.White)
                 Text("Movies + shows: ${processedCounts?.moviesAndShows ?: "Count unavailable"}", color = Color.White)
-                Text("Movies: Separate count unavailable", color = settingsMuted)
-                Text("Shows: Separate count unavailable", color = settingsMuted)
+                Text("Movie and show categories classified during scan", color = settingsMuted)
                 Spacer(Modifier.height(24.dp))
                 ProfileField("Playlist name", processedName, !busy) { processedName = it }
                 if (message.startsWith("Could not save playlist name") || message.startsWith("Enter a playlist name"))
@@ -575,12 +612,28 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
         }
         "connecting" -> Box(Modifier.fillMaxSize().background(settingsBackground), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                TvStatusPanel(if (busy) "Connecting to playlist…" else "Could not connect",
-                    if (busy) "Checking your portal and preparing the guide" else message,
+                val scanning = busy && scanningCategories
+                TvStatusPanel(
+                    when {
+                        !busy -> "Could not connect"
+                        scanning -> "Scanning categories…"
+                        else -> "Connecting to playlist…"
+                    },
+                    when {
+                        !busy -> message
+                        scanning && totalCategories > 0 ->
+                            "Scanning $scannedCategories of $totalCategories categories"
+                        scanning -> "Reading the portal category list"
+                        else -> "Checking your portal and preparing the guide"
+                    },
                     loading = busy, modifier = Modifier.width(480.dp), shape = TvStatusShape.NONE,
                     retryLabel = "Retry connection",
-                    onRetry = if (busy) null else { { reconnectProfile?.let(::connect) } },
-                    retryModifier = Modifier.focusRequester(firstFocus))
+                    onRetry = if (busy) null else {
+                        { reconnectProfile?.let { connect(it, reconnectRefreshCategories) } }
+                    },
+                    retryModifier = Modifier.focusRequester(firstFocus),
+                    progress = if (scanning && totalCategories > 0)
+                        scannedCategories.toFloat() / totalCategories else null)
                 if (!busy) {
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }
                     Button(onClick = { screen = "demo" }) { Text("Open offline demo") }
@@ -698,6 +751,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                         sessionToken = null
                                         sessionApiHost = null
                                         sessionWatchdogSeconds = null
+                                        sessionCategoryKinds = emptyMap()
                                         reconnectProfile = candidate
                                     }
                                 }
@@ -709,10 +763,15 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=profile.store.edit failure=${error.javaClass.simpleName}")
                                 message = "Could not save playlist. Please retry."
                             } finally { busy = false }
-                            if (reconnect) connect(candidate)
+                            if (reconnect) connect(candidate, refreshCategoryMap = true)
                         }
                     }) { Text("Save") }
                     Button(enabled = !busy, onClick = { connect(original) }) { Text("Connect") }
+                    Button(enabled = !busy, onClick = { connect(original, refreshCategoryMap = true) }) {
+                        Text("Refresh playlist")
+                    }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(enabled = !busy && selectedProfile == original, onClick = {
                         busy = true
                         scope.launch {
@@ -722,6 +781,7 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                                 sessionToken = null
                                 sessionApiHost = null
                                 sessionWatchdogSeconds = null
+                                sessionCategoryKinds = emptyMap()
                                 reconnectProfile = null
                                 message = "No playlist selected. Not connected."
                             } catch (_: Exception) {
@@ -760,6 +820,15 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     Text("Use your provider-registered MAC. Docker demo: 00:1A:79:00:00:01", fontSize = 12.sp, color = settingsMuted)
                     ProfileField("Serial ID (optional)", serial, !busy) { serial = it }
                     if (message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
+                    if (busy && scanningCategories) {
+                        val progressMessage = if (totalCategories > 0)
+                            "Scanning $scannedCategories of $totalCategories categories"
+                        else "Reading the portal category list"
+                        TvInlineStatus(progressMessage, loading = true)
+                        if (totalCategories > 0) TvProgressBar(
+                            scannedCategories.toFloat() / totalCategories,
+                            Modifier.fillMaxWidth())
+                    }
                 }
                 Column(Modifier.weight(0.55f).fillMaxHeight().background(settingsBackground).padding(20.dp),
                     verticalArrangement = Arrangement.Center) {
@@ -782,20 +851,27 @@ fun ProfileSetup(onDemo: @Composable () -> Unit) {
                     sessionToken = null
                     sessionApiHost = null
                     sessionWatchdogSeconds = null
+                    sessionCategoryKinds = emptyMap()
+                    scanningCategories = false
+                    scannedCategories = 0
+                    totalCategories = 0
                     message = "Testing connection…"
                     scope.launch {
                         var stage = "portal.verify"
                         try {
-                            val updated = profiles + candidate
-                            val (verified, counts) = withContext(Dispatchers.IO) {
-                                val verified = testPortal(candidate, container)
-                                stage = "profile.store.save"
-                                store.save(updated, updated.lastIndex)
-                                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage saved=true")
-                                stage = "portal.counts"
-                                verified to portalCounts(candidate, verified, container)
+                            val verified = withContext(Dispatchers.IO) { testPortal(candidate, container) }
+                            stage = "vod.category_scan"
+                            val kinds = scanAndStoreCategoryKinds(candidate, verified)
+                            stage = "portal.counts"
+                            val counts = withContext(Dispatchers.IO) {
+                                portalCounts(candidate, verified, container)
                             }
+                            stage = "profile.store.save"
+                            val updated = profiles + candidate
+                            withContext(Dispatchers.IO) { store.save(updated, updated.lastIndex) }
+                            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=$stage saved=true")
                             profiles = updated
+                            sessionCategoryKinds = kinds
                             sessionToken = verified.token
                             sessionApiHost = verified.apiHost
                             sessionWatchdogSeconds = verified.watchdogSeconds

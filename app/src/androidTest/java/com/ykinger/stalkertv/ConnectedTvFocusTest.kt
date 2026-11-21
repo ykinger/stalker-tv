@@ -33,6 +33,73 @@ class ConnectedTvFocusTest {
         compose.onNode(hasText("No Movies on this page")).assertExists()
     }
 
+    @Test fun portalFilteredShowsDisplayEveryReturnedRow() =
+        portalFilteredVodKeepsRowsWithDifferentPrimaryCategory(ContentKind.SERIES)
+
+    @Test fun portalFilteredMoviesDisplayEveryReturnedRow() =
+        portalFilteredVodKeepsRowsWithDifferentPrimaryCategory(ContentKind.MOVIE)
+
+    private fun portalFilteredVodKeepsRowsWithDifferentPrimaryCategory(kind: ContentKind) {
+        val requests = mutableListOf<String?>()
+        val selected = Title("selected", "Selected Title", kind, "primary-category")
+        val other = Title("other", "Other Kind", if (kind == ContentKind.MOVIE) ContentKind.SERIES
+            else ContentKind.MOVIE, "primary-category")
+        val repository = object : PagedContentRepository, VodCategoryKindSource {
+            override fun categoryKind(categoryId: String): ContentKind? = when (categoryId) {
+                "42" -> kind
+                "20", "21", "24" -> ContentKind.SERIES
+                "22" -> ContentKind.MOVIE
+                else -> null
+            }
+            override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> {
+                if (kind == ContentKind.CHANNEL) return ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+                requests += categoryId
+                return ProviderResult.Success(Catalogue(listOf(
+                    Category("42", "Hindi | Comedy"),
+                    Category("20", "ENGLISH | TV SHOWS"),
+                    Category("21", "PUNJABI | COLLECTION"),
+                    Category("22", "ENGLISH MOVIES | COLLECTION"),
+                    Category("23", "UNMAPPED TV SERIES"),
+                    Category("24", "MOVIES BY NAME")),
+                    listOf(selected, other), totalItems = 200))
+            }
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        val section = if (kind == ContentKind.MOVIE) "Movies" else "Shows"
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.onNodeWithContentDescription(section).performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("Hindi | Comedy") and hasClickAction()).fetchSemanticsNodes().isNotEmpty()
+        }
+        if (kind == ContentKind.MOVIE) {
+            compose.onNodeWithText("ENGLISH | TV SHOWS").assertDoesNotExist()
+            compose.onNodeWithText("PUNJABI | COLLECTION").assertDoesNotExist()
+            compose.onNodeWithText("ENGLISH MOVIES | COLLECTION").assertExists()
+            compose.onNodeWithText("MOVIES BY NAME").assertDoesNotExist()
+        } else {
+            compose.onNodeWithText("ENGLISH | TV SHOWS").assertExists()
+            compose.onNodeWithText("PUNJABI | COLLECTION").assertExists()
+            compose.onNodeWithText("MOVIES BY NAME").assertExists()
+        }
+        compose.onNodeWithText("UNMAPPED TV SERIES").assertDoesNotExist()
+        compose.onNode(hasText("Hindi | Comedy") and hasClickAction()).performClick()
+        compose.waitUntil(5_000) {
+            requests.lastOrNull() == "42" &&
+                compose.onAllNodesWithContentDescription("Selected Title").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription("Other Kind").assertExists()
+        compose.onNodeWithText("1 / 200 ${section.lowercase()}").assertExists()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasContentDescription("Selected Title") and isFocused())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        org.junit.Assert.assertEquals(listOf(null, "42"), requests)
+    }
+
     @Test fun tvCategoriesOpenWithRightAndLeftReturnsToSelectedCategory() {
         val requests = mutableListOf<String?>()
         val categories = listOf(Category("news", "News"), Category("sports", "Sports"))
@@ -96,6 +163,46 @@ class ConnectedTvFocusTest {
             .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
         compose.waitUntil(5_000) { requests.lastOrNull() == "sports" }
         compose.onAllNodesWithText("Sports Channel").assertCountEquals(2)
+    }
+
+    @Test fun rightFromAllChannelsOpensFocusedChannelFullScreen() {
+        val repository = object : PagedContentRepository {
+            override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
+                ProviderResult.Success(Catalogue(listOf(Category("*", "All")),
+                    listOf(Title("1", "All Channel", ContentKind.CHANNEL, "news"))))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> =
+                ProviderResult.Success(PlaybackSource("asset:///big_buck_bunny_sample.mp4", "All Channel"))
+        }
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("All", substring = false) and hasClickAction() and isFocused())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("All Channel") and hasClickAction() and isFocused())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("All", substring = false) and hasClickAction())
+                .fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitForIdle()
+        compose.onNode(hasText("All Channel") and hasClickAction()).assertIsFocused()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasContentDescription("Expand TV preview") and isEnabled())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithContentDescription("Expand TV preview").fetchSemanticsNodes().isEmpty()
+        }
     }
 
     @Test fun selectingChannelKeepsGuidePositionAndFocus() {
@@ -194,7 +301,9 @@ class ConnectedTvFocusTest {
         val categories = listOf(Category("drama", "Drama"), Category("comedy", "Comedy"))
         val all = listOf(Title("series:1", "Drama Show", ContentKind.SERIES, "drama"),
             Title("series:2", "Comedy Show", ContentKind.SERIES, "comedy"))
-        val repository = object : PagedContentRepository {
+        val repository = object : PagedContentRepository, VodCategoryKindSource {
+            override fun categoryKind(categoryId: String): ContentKind? =
+                ContentKind.SERIES.takeIf { categoryId in setOf("drama", "comedy") }
             override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
             override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> {
                 if (kind != ContentKind.SERIES) return ProviderResult.Success(Catalogue(emptyList(), emptyList()))
@@ -217,6 +326,7 @@ class ConnectedTvFocusTest {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithContentDescription("Comedy Show").fetchSemanticsNodes().isNotEmpty()
         }
+        compose.onNodeWithText("2 shows loaded").assertExists()
         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
             .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_LEFT)
         compose.waitUntil(5_000) {
@@ -240,7 +350,9 @@ class ConnectedTvFocusTest {
         val releaseCategory = kotlinx.coroutines.CompletableDeferred<Unit>()
         var attempts = 0
         val requests = mutableListOf<Pair<ContentKind, String?>>()
-        val repository = object : PagedContentRepository {
+        val repository = object : PagedContentRepository, VodCategoryKindSource {
+            override fun categoryKind(categoryId: String): ContentKind? =
+                ContentKind.SERIES.takeIf { categoryId == "drama" }
             override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
             override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> {
                 requests += kind to categoryId
@@ -296,7 +408,9 @@ class ConnectedTvFocusTest {
         val requests = mutableListOf<String>()
         val titles = listOf(Title("1", "Blue Title", kind, "drama"),
             Title("2", "Red Title", kind, "drama"))
-        val repository = object : PagedContentRepository {
+        val repository = object : PagedContentRepository, VodCategoryKindSource {
+            override fun categoryKind(categoryId: String): ContentKind? =
+                kind.takeIf { categoryId == "drama" }
             override suspend fun catalogue() = loadPage(kind, null, 1)
             override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
                 loadPage(kind, categoryId, page, "", "added")
