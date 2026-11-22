@@ -66,6 +66,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -524,10 +525,23 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     modifier = Modifier.fillMaxWidth()
                         .padding(bottom = if (compactMenu) 24.dp else 8.dp)
                         .height(if (compactMenu) 40.dp else 34.dp))
-                if (!compactMenu) Text(profileName, color = muted, fontSize = 13.sp,
-                    modifier = Modifier.padding(start = 12.dp, bottom = 6.dp))
-                GuideAction("Switch profile", icon = Icons.Default.AccountCircle, compact = compactMenu,
-                    height = 44.dp, onClick = onSwitchProfile)
+                if (compactMenu) {
+                    GuideAction("Switch profile", icon = Icons.Default.AccountCircle,
+                        compact = true, height = 44.dp, onClick = onSwitchProfile)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(start = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.AccountCircle, contentDescription = null,
+                                tint = Color.White, modifier = Modifier.size(24.dp))
+                            Text(profileName.ifBlank { "Profile" }, color = Color.White,
+                                fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        }
+                        SwitchProfileLink(onSwitchProfile)
+                    }
+                }
                 Spacer(Modifier.height(if (compactMenu) 20.dp else 16.dp))
                 val menu = buildList {
                     add("Search" to Icons.Default.Search)
@@ -1243,6 +1257,19 @@ private fun GuideAction(label: String, selected: Boolean = false, modifier: Modi
                 tint = if (focused) Color.Black else Color.White, modifier = Modifier.size(20.dp))
             if (!compact) Text(label, fontSize = 16.sp, color = if (focused) Color.Black else Color.White)
         }
+    }
+}
+
+@Composable
+private fun SwitchProfileLink(onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth().height(32.dp)
+        .semantics { contentDescription = "Switch profile" }
+        .onFocusChanged { focused = it.isFocused }
+        .background(if (focused) focusColor else Color.Transparent, RoundedCornerShape(5.dp))
+        .clickable(onClick = onClick).focusable().padding(horizontal = 12.dp),
+        contentAlignment = Alignment.CenterStart) {
+        Text("Switch profile", color = if (focused) Color.Black else muted, fontSize = 12.sp)
     }
 }
 

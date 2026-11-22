@@ -26,6 +26,12 @@ class ConnectedTvFocusTest {
             ConnectedTvScreen(AppContainer(repository), profileName = "Alice",
                 onSwitchProfile = { switched = true })
         }
+        // Focusing the compact icon expands the menu and reveals the profile header.
+        compose.onNodeWithContentDescription("Switch profile").requestFocus()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Alice").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Alice").assertExists()
         compose.onNodeWithContentDescription("Switch profile").performClick()
         compose.runOnIdle { org.junit.Assert.assertTrue(switched) }
     }
