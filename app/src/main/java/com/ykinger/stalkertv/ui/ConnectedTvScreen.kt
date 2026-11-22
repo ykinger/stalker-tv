@@ -515,20 +515,20 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             }
             .focusGroup()
             .padding(if (compactMenu) 8.dp else 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                verticalArrangement = Arrangement.spacedBy(if (compactMenu) 6.dp else 8.dp)) {
                 Image(
                     painter = painterResource(
-                        if (compactMenu) R.drawable.logo_icon else R.drawable.logo_full),
+                        if (compactMenu) R.drawable.logo_icon else R.drawable.logo_full_horizontal),
                     contentDescription = "VibeTV", contentScale = ContentScale.Fit,
                     alignment = if (compactMenu) Alignment.Center else Alignment.CenterStart,
                     modifier = Modifier.fillMaxWidth()
-                        .padding(bottom = if (compactMenu) 24.dp else 6.dp)
-                        .height(if (compactMenu) 40.dp else 56.dp))
+                        .padding(bottom = if (compactMenu) 24.dp else 8.dp)
+                        .height(if (compactMenu) 40.dp else 34.dp))
                 if (!compactMenu) Text(profileName, color = muted, fontSize = 13.sp,
                     modifier = Modifier.padding(start = 12.dp, bottom = 6.dp))
                 GuideAction("Switch profile", icon = Icons.Default.AccountCircle, compact = compactMenu,
                     height = 44.dp, onClick = onSwitchProfile)
-                Spacer(Modifier.height(if (compactMenu) 20.dp else 12.dp))
+                Spacer(Modifier.height(if (compactMenu) 20.dp else 16.dp))
                 val menu = buildList {
                     add("Search" to Icons.Default.Search)
                     add("TV" to ConnectedMenuIcons.tv)
