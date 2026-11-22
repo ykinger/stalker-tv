@@ -2,9 +2,10 @@
 
 1. **Foundation:** offline demo and emulator smoke tests (implemented; manual
    emulator journeys reported passing by user).
-2. **Playlist onboarding — current:** no-playlist landing → Add playlist → Stalker
-   Portal → host/IP, editable MAC, optional serial ID → Docker handshake/profile
-   test → encrypted local save. The last selected playlist reconnects on launch;
+2. **Playlist onboarding — current:** create profile → no-playlist landing → Add
+   playlist → Stalker Portal → who can use the playlist → host/IP, editable MAC,
+   optional serial ID → Docker handshake/profile test → encrypted local save. The
+   last selected playlist reconnects on launch;
    explicit deselection keeps the app disconnected.
    See [tickets](stories/PROFILE-001.md).
 3. **Network catalogue — in verification:** select saved profile, fetch all channel pages, resolve and

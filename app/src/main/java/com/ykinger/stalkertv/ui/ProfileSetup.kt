@@ -494,6 +494,7 @@ fun ProfileSetup() {
     var playlists by remember { mutableStateOf<List<PortalProfile>>(emptyList()) }
     var loadingProfiles by remember { mutableStateOf(true) }
     var screen by remember { mutableStateOf("viewerChooser") }
+    var playlistReturnScreen by remember { mutableStateOf("landing") }
     var playlistForEveryone by remember { mutableStateOf(false) }
     var serial by remember { mutableStateOf("") }
     var host by remember { mutableStateOf("") }
@@ -676,9 +677,9 @@ fun ProfileSetup() {
                 editingIndex = -1
                 "settings"
             } else if (sessionToken != null) "home" else "landing"
-            "form" -> "protocol"
-            "protocol" -> "playlistScope"
-            "playlistScope" -> "landing"
+            "form" -> "playlistScope"
+            "playlistScope" -> "protocol"
+            "protocol" -> playlistReturnScreen
             "home" -> "settings"
             else -> "landing"
         }
@@ -779,7 +780,10 @@ fun ProfileSetup() {
                                 val hasAvailable = playlists.any {
                                     it.ownerProfileId == null || it.ownerProfileId == created.id
                                 }
-                                screen = if (hasAvailable) "landing" else "playlistScope"
+                                screen = if (hasAvailable) "landing" else {
+                                    playlistReturnScreen = "landing"
+                                    "protocol"
+                                }
                             } catch (_: Exception) {
                                 message = "Could not save this profile. Please retry."
                             } finally { busy = false }
@@ -884,8 +888,10 @@ fun ProfileSetup() {
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Button(enabled = !loadingProfiles, onClick = { screen = "playlistScope" },
-                        modifier = Modifier.focusRequester(firstFocus)) { Text("Add playlist") }
+                    Button(enabled = !loadingProfiles, onClick = {
+                        playlistReturnScreen = "landing"
+                        screen = "protocol"
+                    }, modifier = Modifier.focusRequester(firstFocus)) { Text("Add playlist") }
                     Button(onClick = { screen = "settings" }) { Text("Settings") }
                     Button(onClick = { activeViewer = null; screen = "viewerChooser" }) { Text("Switch profile") }
                 }
@@ -910,7 +916,10 @@ fun ProfileSetup() {
                     }
                 }
                 Button(enabled = !loadingProfiles && !busy, onClick = {
-                    editingIndex = -1; message = ""; screen = "playlistScope"
+                    editingIndex = -1
+                    message = ""
+                    playlistReturnScreen = "settings"
+                    screen = "protocol"
                 }, modifier = if (visiblePlaylists.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier) {
                     Text(if (visiblePlaylists.isEmpty()) "Add playlist" else "Add another playlist")
                 }
@@ -1043,7 +1052,7 @@ fun ProfileSetup() {
                 Button(onClick = {
                     playlistForEveryone = false
                     message = ""
-                    screen = "protocol"
+                    screen = "form"
                 }, modifier = Modifier.focusRequester(firstFocus)) {
                     Text("Just me")
                 }
@@ -1051,10 +1060,10 @@ fun ProfileSetup() {
                 Button(onClick = {
                     playlistForEveryone = true
                     message = ""
-                    screen = "protocol"
+                    screen = "form"
                 }) { Text("Everyone") }
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = { screen = "landing" }) { Text("Back") }
+                Button(onClick = { screen = "protocol" }) { Text("Back") }
             }
         }
         "protocol", "form" -> Row(Modifier.fillMaxSize().background(settingsBackground)) {
@@ -1067,9 +1076,9 @@ fun ProfileSetup() {
                     verticalArrangement = Arrangement.Center) {
                     Text("Playlist type", fontSize = 24.sp, color = Color.White)
                     Spacer(Modifier.height(22.dp))
-                    Button(onClick = { message = ""; screen = "form" }, modifier = Modifier.focusRequester(firstFocus)) { Text("Stalker Portal") }
+                    Button(onClick = { message = ""; screen = "playlistScope" }, modifier = Modifier.focusRequester(firstFocus)) { Text("Stalker Portal") }
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { screen = "playlistScope" }) { Text("Back") }
+                    Button(onClick = { screen = playlistReturnScreen }) { Text("Back") }
                 }
             } else {
                 Column(Modifier.weight(1.15f).fillMaxHeight().background(settingsPanel).padding(24.dp)
@@ -1169,7 +1178,7 @@ fun ProfileSetup() {
                     }
                     }) { Text(if (busy) "Testing…" else "Next") }
                     Spacer(Modifier.height(12.dp))
-                    Button(enabled = !busy, onClick = { screen = "protocol" }) { Text("Back") }
+                    Button(enabled = !busy, onClick = { screen = "playlistScope" }) { Text("Back") }
                 }
             }
         }

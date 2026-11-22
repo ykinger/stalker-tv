@@ -4,7 +4,9 @@ UI update: user-facing "profile" is now "playlist". Existing encrypted profile
 records are read without a destructive migration. When none are saved, show the
 no-playlist notice with Add playlist / Settings; when saved, reconnect the last
 selected playlist and open the connected guide on success. Explicit deselection prevents automatic
-connection on subsequent launches. Choosing Stalker Portal turns the two-column
+connection on subsequent launches. After creating a profile with no available
+playlist, the flow opens Add playlist → Stalker Portal → “Who can use this
+playlist?” → connection details. Choosing Stalker Portal turns the two-column
 type screen into a three-column layout: title, connection fields, Next/Back.
 The visual references are in `../assets/` and are not copied as production artwork.
 Portal host/IP and editable MAC are required; serial ID is optional and omitted
@@ -21,7 +23,7 @@ it does not complete all of PROV-002 or prove real portal compatibility.
 | Ticket | Scope | Status |
 | --- | --- | --- |
 | PROFILE-001-01 | No-playlist page, playlist chooser when saved, offline demo separate | Verification |
-| PROFILE-001-02 | Add playlist → Stalker Portal; 2-column type → 3-column form | Verification |
+| PROFILE-001-02 | Add playlist → Stalker Portal → playlist access → 3-column form | Verification |
 | PROFILE-001-03 | Optional serial ID, HTTP(S) host and editable MAC | Verification |
 | PROFILE-001-04 | Test MAC handshake and authenticated profile against Docker | Verification |
 | PROFILE-001-05 | Save successful playlist encrypted locally; survive restart | Verification |
@@ -34,7 +36,8 @@ it does not complete all of PROV-002 or prove real portal compatibility.
 - Settings lists every saved playlist with protocol, host, serial ID and MAC,
   and offers Add playlist / Add another playlist. Adding does not replace existing
   entries; exact duplicates are rejected. Original single-profile storage migrates on read.
-- Protocol selection offers Stalker only.
+- Protocol selection offers Stalker only. Playlist access (Just me / Everyone) is
+  chosen after selecting Stalker and before connection details.
 - Form requires host and colon-separated MAC; serial ID is optional; errors preserve input.
 - Bare host/IP is accepted and defaults to HTTP for local development. Explicit
   HTTP/HTTPS URLs retain endpoint paths. Reject credentials, fragments and queries.
@@ -70,8 +73,9 @@ offline navigation tests failed after entering the demo (missing expected nodes)
 regression investigation and remote-only manual acceptance remain open. Full
 process restart persistence has not yet been independently tested.
 
-Start Docker; run app; landing → Add playlist → Stalker Portal. Enter Docker host
-and fake MAC above, leave serial blank, then select Next. Restart app and confirm
+Start Docker; run app; landing → Add playlist → Stalker Portal → “Who can use
+this playlist?” → Just me. Enter Docker host and fake MAC above, leave serial
+blank, then select Next. Restart app and confirm
 it reconnects to the guide without the add-playlist screen. Deselect in Settings and
 restart again to check it stays disconnected. Try wrong
 MAC and stopped Docker; verify failures and retry. Navigate every screen with

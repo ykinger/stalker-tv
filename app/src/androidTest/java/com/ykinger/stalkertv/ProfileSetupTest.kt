@@ -26,7 +26,7 @@ class ProfileSetupTest {
         compose.activityRule.scenario.recreate()
     }
 
-    @Test fun firstLaunchCreatesViewerBeforeChoosingPlaylistAccess() {
+    @Test fun firstLaunchCreatesProfileThenAddsPlaylistBeforeAccess() {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithText("Create profile").fetchSemanticsNodes().isNotEmpty()
         }
@@ -34,11 +34,28 @@ class ProfileSetupTest {
         compose.onNodeWithContentDescription("Edit Profile name").performClick()
         compose.onNode(hasSetTextAction()).performTextReplacement("Alice")
         compose.onNodeWithText("Create").performSemanticsAction(SemanticsActions.OnClick) { it() }
+
+        // A fresh profile goes to Add playlist first; access is chosen after Stalker.
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("Stalker Portal") and hasClickAction())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Who can use this playlist?").assertDoesNotExist()
+        compose.onNode(hasText("Stalker Portal") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+
         compose.waitUntil(5_000) {
             compose.onAllNodesWithText("Who can use this playlist?").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("Just me").assertExists()
         compose.onNodeWithText("Everyone").assertExists()
+        compose.onNodeWithText("Just me").performSemanticsAction(SemanticsActions.OnClick) { it() }
+
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Connection details").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Stalker Portal").assertExists()
+        compose.onNodeWithContentDescription("Edit MAC address").assertExists()
 
         compose.activityRule.scenario.recreate()
         compose.waitUntil(5_000) {
@@ -52,8 +69,17 @@ class ProfileSetupTest {
         }
         compose.onNode(hasText("Add playlist", substring = false) and hasClickAction())
             .performSemanticsAction(SemanticsActions.OnClick) { it() }
+
+        // The same Add playlist → Stalker → access order applies from the landing page.
         compose.waitUntil(5_000) {
-            compose.onAllNodesWithText("Just me").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(hasText("Stalker Portal") and hasClickAction())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Who can use this playlist?").assertDoesNotExist()
+        compose.onNode(hasText("Stalker Portal") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Who can use this playlist?").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("Everyone").assertExists()
     }

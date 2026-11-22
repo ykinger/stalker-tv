@@ -6,10 +6,11 @@
 behind VibeTV Pro (annual subscription or one-time purchase). See
 [BILLING-001](stories/BILLING-001.md). The emulator-first milestone below is complete.
 
-The earlier milestone was: start on a landing page. Settings offers Add profile → protocol selection (Stalker
-only initially) → serial ID, host address, and registered MAC. Validate against the
-Docker portal before saving locally. Emulator-first development; physical-box and
-real-provider validation happen near release, not as a prerequisite for this milestone.
+The earlier milestone was: start on a landing page. Create profile → Add playlist →
+protocol selection (Stalker only initially) → who can use the playlist → serial ID,
+host address, and registered MAC. Validate against the Docker portal before saving
+locally. Emulator-first development; physical-box and real-provider validation
+happen near release, not as a prerequisite for this milestone.
 
 ## Vision
 
