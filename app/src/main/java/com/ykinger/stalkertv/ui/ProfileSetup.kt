@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,8 +21,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -47,6 +50,7 @@ import org.json.JSONObject
 import org.json.JSONArray
 import org.json.JSONException
 import com.ykinger.stalkertv.BuildConfig
+import com.ykinger.stalkertv.R
 import com.ykinger.stalkertv.AppContainer
 import com.ykinger.stalkertv.TvApplication
 import com.ykinger.stalkertv.core.Category
@@ -718,7 +722,8 @@ fun ProfileSetup() {
             Column(Modifier.fillMaxWidth(0.72f).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                Text("VIBETV", fontSize = 30.sp, color = settingsBlue)
+                Image(painterResource(R.drawable.logo_full), contentDescription = "VibeTV",
+                    contentScale = ContentScale.Fit, modifier = Modifier.height(96.dp))
                 Text("Who's watching?", fontSize = 30.sp, color = Color.White)
                 if (loadingProfiles) TvInlineStatus("Loading profiles…", loading = true)
                 else {
@@ -862,7 +867,8 @@ fun ProfileSetup() {
             Column(Modifier.fillMaxWidth(0.82f).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                Text("VIBETV", fontSize = 30.sp, color = settingsBlue)
+                Image(painterResource(R.drawable.logo_full), contentDescription = "VibeTV",
+                    contentScale = ContentScale.Fit, modifier = Modifier.height(96.dp))
                 Text(viewer?.name.orEmpty(), fontSize = 18.sp, color = settingsMuted)
                 if (loadingProfiles) TvInlineStatus("Loading playlists…", loading = true)
                 else if (visiblePlaylists.isEmpty()) Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -890,7 +896,8 @@ fun ProfileSetup() {
             Column(Modifier.weight(0.9f).fillMaxHeight().background(Color(0xFF15191A))
                 .padding(start = 36.dp, top = 34.dp, end = 28.dp, bottom = 28.dp)
                 .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("VIBETV", color = settingsBlue, fontSize = 16.sp)
+                Image(painterResource(R.drawable.logo_full_horizontal), contentDescription = "VibeTV",
+                    contentScale = ContentScale.Fit, modifier = Modifier.height(28.dp))
                 Text("${viewer?.name.orEmpty()} · Playlists", color = Color.White, fontSize = 28.sp)
                 Spacer(Modifier.height(8.dp))
                 if (loadingProfiles) TvInlineStatus("Loading playlists…", loading = true)

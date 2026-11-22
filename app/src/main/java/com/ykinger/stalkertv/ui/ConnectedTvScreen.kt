@@ -2,6 +2,7 @@ package com.ykinger.stalkertv.ui
 
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import android.util.Log
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -58,11 +60,13 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -84,6 +88,7 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.ykinger.stalkertv.AppContainer
 import com.ykinger.stalkertv.BuildConfig
+import com.ykinger.stalkertv.R
 import com.ykinger.stalkertv.core.Catalogue
 import com.ykinger.stalkertv.core.ContentKind
 import com.ykinger.stalkertv.core.PlaybackSource
@@ -509,16 +514,21 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     !focusSelectedVodCategory && !focusSelectedChannelCategory) area = "menu"
             }
             .focusGroup()
-            .padding(if (compactMenu) 8.dp else 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (compactMenu) "VT" else "VIBETV", fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold, color = accent,
-                    modifier = Modifier.padding(bottom = if (compactMenu) 30.dp else 8.dp))
+            .padding(if (compactMenu) 8.dp else 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Image(
+                    painter = painterResource(
+                        if (compactMenu) R.drawable.logo_icon else R.drawable.logo_full),
+                    contentDescription = "VibeTV", contentScale = ContentScale.Fit,
+                    alignment = if (compactMenu) Alignment.Center else Alignment.CenterStart,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(bottom = if (compactMenu) 24.dp else 6.dp)
+                        .height(if (compactMenu) 40.dp else 56.dp))
                 if (!compactMenu) Text(profileName, color = muted, fontSize = 13.sp,
-                    modifier = Modifier.padding(start = 12.dp, bottom = 12.dp))
+                    modifier = Modifier.padding(start = 12.dp, bottom = 6.dp))
                 GuideAction("Switch profile", icon = Icons.Default.AccountCircle, compact = compactMenu,
-                    onClick = onSwitchProfile)
-                Spacer(Modifier.height(if (compactMenu) 20.dp else 34.dp))
+                    height = 44.dp, onClick = onSwitchProfile)
+                Spacer(Modifier.height(if (compactMenu) 20.dp else 12.dp))
                 val menu = buildList {
                     add("Search" to Icons.Default.Search)
                     add("TV" to ConnectedMenuIcons.tv)
@@ -535,7 +545,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                 menu.forEach { (item, icon) ->
                     GuideAction(item, selected = section == item,
                         modifier = if (item == section) Modifier.focusRequester(menuFocus) else Modifier,
-                        icon = icon, compact = compactMenu,
+                        icon = icon, compact = compactMenu, height = 44.dp,
                         onClick = {
                             openSection(item)
                         })
@@ -1220,9 +1230,9 @@ private fun EpisodePoster(episode: Title, number: Int, modifier: Modifier = Modi
 
 @Composable
 private fun GuideAction(label: String, selected: Boolean = false, modifier: Modifier = Modifier,
-    icon: ImageVector? = null, compact: Boolean = false, onClick: () -> Unit) {
+    icon: ImageVector? = null, compact: Boolean = false, height: Dp = 48.dp, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    Box(modifier.fillMaxWidth().height(48.dp)
+    Box(modifier.fillMaxWidth().height(height)
         .then(if (compact) Modifier.semantics { contentDescription = label } else Modifier)
         .onFocusChanged { focused = it.isFocused }
         .background(if (focused) focusColor else if (selected) cell else Color.Transparent, RoundedCornerShape(5.dp))
