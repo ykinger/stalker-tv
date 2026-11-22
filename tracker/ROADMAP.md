@@ -15,6 +15,10 @@
    catalogue search, and preferences. Extend Docker fixtures as needed.
 6. **Real-provider and physical-box validation:** authorized registration, portal
    differences, actual codecs/live playback, long playback and recovery tests.
-7. **Release:** security review, device matrix, signing, installation, release notes.
+7. **VibeTV Pro entitlements — next, blocked on Play Console:** free tier allows one
+   profile and one playlist; an annual subscription or a one-time purchase unlocks
+   more. See [BILLING-001](stories/BILLING-001.md).
+8. **Release:** security review, device matrix, signing, installation, release notes,
+   Play Console listing and internal testing.
 
 Docker success is simulated protocol evidence, not real-provider compatibility.

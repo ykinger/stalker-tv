@@ -2,7 +2,11 @@
 
 ## Next milestone
 
-Start on a landing page. Settings offers Add profile → protocol selection (Stalker
+**Next, when Play Console is ready:** gate additional viewer profiles and playlists
+behind VibeTV Pro (annual subscription or one-time purchase). See
+[BILLING-001](stories/BILLING-001.md). The emulator-first milestone below is complete.
+
+The earlier milestone was: start on a landing page. Settings offers Add profile → protocol selection (Stalker
 only initially) → serial ID, host address, and registered MAC. Validate against the
 Docker portal before saving locally. Emulator-first development; physical-box and
 real-provider validation happen near release, not as a prerequisite for this milestone.
@@ -46,7 +50,7 @@ Mock mode is the initial development default. Sample playback uses bundled or au
 
 ## Deferred
 
-Multiple active providers, Xtream Codes, M3U, recording, catch-up, timeshift, cloud sync, billing, and recommendations. DRM integration depends on provider requirements and is not assumed for the MVP.
+Multiple active providers, Xtream Codes, M3U, recording, catch-up, timeshift, cloud sync, and recommendations. Billing is no longer deferred; see [BILLING-001](stories/BILLING-001.md). DRM integration depends on provider requirements and is not assumed for the MVP.
 
 ## Open decisions
 
@@ -55,6 +59,7 @@ Multiple active providers, Xtream Codes, M3U, recording, catch-up, timeshift, cl
 - Minimum Android version and physical device test matrix.
 - Supported stream codecs and DRM requirements.
 - Direct APK versus Google Play distribution.
+- Play Console product IDs, prices, and offline entitlement grace for VibeTV Pro.
 
 ## Release gate
 
