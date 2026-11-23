@@ -530,4 +530,103 @@ class ConnectedTvFocusTest {
         compose.onNodeWithContentDescription("Show details").assertIsFocused()
         compose.onNodeWithText("A Show").assertIsDisplayed()
     }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test fun leftFromLaterEpisodeStepsBackBeforeOpeningTheMenu() {
+        val show = Title("series:1", "A Show", ContentKind.SERIES, "drama")
+        val episodes = listOf(
+            Title("ep:1", "Pilot", ContentKind.EPISODE, "season:1"),
+            Title("ep:2", "Second", ContentKind.EPISODE, "season:1"),
+            Title("ep:3", "Third", ContentKind.EPISODE, "season:1"))
+        val repository = object : ContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(
+                listOf(Category("drama", "Drama")), listOf(show)))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String) = ProviderResult.Success(listOf(
+                Season("season:1", show.id, 1, emptyList())))
+            override suspend fun episodes(seriesId: String, seasonId: String, page: Int) =
+                ProviderResult.Success(EpisodePage(episodes))
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.onNode(hasContentDescription("Shows") and hasClickAction()).performClick()
+        compose.onNode(hasText("Drama") and hasClickAction()).performClick()
+        compose.onNodeWithContentDescription("A Show").performClick()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithContentDescription("Episode 2: Second").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription("Episode 2: Second").requestFocus()
+        compose.onNodeWithContentDescription("Episode 2: Second").assertIsFocused()
+
+        // Left on a later episode stays in the row instead of jumping to the menu.
+        fun pressLeft() = compose.onNode(isFocused()).performKeyInput {
+            keyDown(androidx.compose.ui.input.key.Key.DirectionLeft)
+            keyUp(androidx.compose.ui.input.key.Key.DirectionLeft)
+        }
+        pressLeft()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasContentDescription("Episode 1: Pilot") and isFocused())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription("Episode 2: Second").assertExists()
+
+        // Left on the first episode still opens the category menu.
+        pressLeft()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("Drama") and hasClickAction() and isFocused())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    @Test fun globalSearchGroupsMatchesAcrossChannelsMoviesAndShows() {
+        val repository = object : PagedContentRepository {
+            override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
+                loadPage(kind, categoryId, page, "", "")
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int,
+                search: String, sort: String): ProviderResult<Catalogue> = when {
+                kind == ContentKind.CHANNEL && page == 1 -> ProviderResult.Success(Catalogue(
+                    emptyList(), listOf(
+                        Title("ch:1", "Alpha Channel", ContentKind.CHANNEL, "group"),
+                        Title("ch:2", "Red Channel", ContentKind.CHANNEL, "group")),
+                    hasMore = true))
+                kind == ContentKind.CHANNEL -> ProviderResult.Success(Catalogue(emptyList(),
+                    listOf(Title("ch:3", "Blue Channel", ContentKind.CHANNEL, "group"))))
+                kind == ContentKind.MOVIE -> ProviderResult.Success(Catalogue(emptyList(),
+                    listOf(Title("movie:1", "Blue Movie", ContentKind.MOVIE, "drama"),
+                        Title("movie:2", "Red Movie", ContentKind.MOVIE, "drama"))))
+                kind == ContentKind.SERIES -> ProviderResult.Success(Catalogue(emptyList(),
+                    listOf(Title("show:1", "Blue Show", ContentKind.SERIES, "drama"))))
+                else -> ProviderResult.Unsupported
+            }
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.onNode(hasContentDescription("Search") and hasClickAction()).performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNode(hasSetTextAction()).performTextInput("Blue")
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Blue Channel").fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithText("Blue Movie").fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithText("Blue Show").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Search channels, movies, and shows").assertExists()
+        compose.onNodeWithText("Channels").assertExists()
+        compose.onNodeWithText("Red Channel").assertDoesNotExist()
+        compose.onNodeWithText("Red Movie").assertDoesNotExist()
+
+        // Selecting a movie opens its detail screen.
+        compose.onNode(hasText("Blue Movie") and hasClickAction()).performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Back to Movies").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
 }

@@ -168,9 +168,11 @@ As a viewer, I can resume movies and episodes from my saved position.
 
 As a viewer, I can search channels, movies, and series by title.
 
-- Remote-accessible text input returns grouped results from the indexed catalogue.
-- Search indicates whether catalogue loading is incomplete.
-- Selecting a result opens the correct channel or title; no matches has a clear state.
+- Remote-accessible text input searches the full channel list and the movie/show
+  catalogues, then returns results grouped as Channels, Movies, and Shows.
+- Portal pages are capped per kind; a truncated group says how many matches are shown.
+- Selecting a result opens the correct channel guide or title detail; loading,
+  errors, and no matches each have a clear state.
 
 ### HOME-001 — Discover content from Home
 **Priority:** P1 | **Dependencies:** TVUI-002, LIB-001, LIB-002

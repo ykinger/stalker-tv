@@ -122,6 +122,19 @@ private data class SeasonEpisodeState(
     val error: String? = null,
 )
 
+private data class GlobalSearchState(
+    val channels: List<Title> = emptyList(),
+    val movies: List<Title> = emptyList(),
+    val shows: List<Title> = emptyList(),
+    val loading: Boolean = false,
+    val message: String? = null,
+    val channelsTruncated: Boolean = false,
+    val moviesTruncated: Boolean = false,
+    val showsTruncated: Boolean = false,
+) {
+    val isEmpty get() = channels.isEmpty() && movies.isEmpty() && shows.isEmpty()
+}
+
 internal fun nearVodEnd(lastVisible: Int, visibleItems: Int, columns: Int, posters: Int): Boolean =
     posters > 0 && lastVisible >= 0 &&
         lastVisible >= posters - 1 - maxOf(columns * 2, visibleItems)
@@ -152,6 +165,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     var area by remember { mutableStateOf("groups") }
     var section by remember { mutableStateOf("TV") }
     var search by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf(GlobalSearchState()) }
     var programmes by remember { mutableStateOf<Map<String, List<Programme>>>(emptyMap()) }
     var vodTitle by remember { mutableStateOf<Title?>(null) }
     var vodCategory by remember { mutableStateOf<String?>(null) }
@@ -168,6 +182,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     var vodLoading by remember { mutableStateOf(false) }
     var returnToGroups by remember { mutableStateOf(false) }
     var focusedPosterIndex by remember { mutableIntStateOf(-1) }
+    var focusedEpisodeIndex by remember { mutableIntStateOf(-1) }
     var mainMenuHasFocus by remember { mutableStateOf(false) }
     var contentHasFocus by remember { mutableStateOf(false) }
     var focusSelectedVodCategory by remember { mutableStateOf(false) }
@@ -218,6 +233,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         movieSearch = ""; movieSearchDraft = ""; movieSearchOpen = false; movieSortOpen = false
         movieSort = "added"; highlightedMovieId = null
         focusedPosterIndex = -1
+        focusedEpisodeIndex = -1
         focusSelectedVodCategory = false
         source = null
         selectedId = null
@@ -227,6 +243,78 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             "Movies" -> model.loadSection(ContentKind.MOVIE, ordering = movieSort)
             "Shows" -> model.loadSection(ContentKind.SERIES, ordering = movieSort)
         }
+    }
+
+    // Global search is independent of the single-page catalogue state so it can
+    // span channels, movies and shows without disturbing the current section.
+    LaunchedEffect(search, section) {
+        if (section != "Search") return@LaunchedEffect
+        val query = search.trim()
+        if (query.isEmpty()) {
+            searchResults = GlobalSearchState()
+            return@LaunchedEffect
+        }
+        searchResults = GlobalSearchState(loading = true)
+        delay(300)
+        val repository = model.repository
+        val paged = repository as? PagedContentRepository
+        val channels = mutableListOf<Title>()
+        val movies = mutableListOf<Title>()
+        val shows = mutableListOf<Title>()
+        var message: String? = null
+        var channelsTruncated = false
+        var moviesTruncated = false
+        var showsTruncated = false
+        val maxPages = 12
+
+        // Some portals ignore the search parameter, so filter locally too.
+        suspend fun collect(kind: ContentKind, term: String, into: MutableList<Title>): Boolean {
+            var page = 1
+            while (page <= maxPages) {
+                when (val result = paged!!.loadPage(kind, null, page, term, "")) {
+                    is ProviderResult.Success -> {
+                        into += result.value.titles
+                        if (!result.value.hasMore) return false
+                        page++
+                    }
+                    is ProviderResult.Failure -> {
+                        if (message == null) message = result.message
+                        return false
+                    }
+                    else -> return false
+                }
+            }
+            return true
+        }
+
+        if (paged != null) {
+            if (collect(ContentKind.CHANNEL, "", channels)) channelsTruncated = true
+            if (collect(ContentKind.MOVIE, query, movies)) moviesTruncated = true
+            if (collect(ContentKind.SERIES, query, shows)) showsTruncated = true
+        } else {
+            when (val result = repository.catalogue()) {
+                is ProviderResult.Success -> {
+                    val all = result.value.titles
+                    channels += all.filter { it.kind == ContentKind.CHANNEL }
+                    movies += all.filter { it.kind == ContentKind.MOVIE }
+                    shows += all.filter { it.kind == ContentKind.SERIES }
+                }
+                is ProviderResult.Failure -> message = result.message
+                else -> Unit
+            }
+        }
+        searchResults = GlobalSearchState(
+            channels = channels.filter { it.name.contains(query, ignoreCase = true) }
+                .distinctBy { it.id }.take(30),
+            movies = movies.filter { it.name.contains(query, ignoreCase = true) }
+                .distinctBy { it.id }.take(30),
+            shows = shows.filter { it.name.contains(query, ignoreCase = true) }
+                .distinctBy { it.id }.take(30),
+            channelsTruncated = channelsTruncated,
+            moviesTruncated = moviesTruncated,
+            showsTruncated = showsTruncated,
+            message = message,
+        )
     }
 
     fun openChannel(title: Title, expandWhenReady: Boolean = false) {
@@ -260,6 +348,26 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             }
             if (selectedId == title.id) resolving = false
             if (expandChannelId == title.id && source == null) expandChannelId = null
+        }
+    }
+
+    fun openSearchResult(title: Title) {
+        if (title.kind == ContentKind.CHANNEL) {
+            group = null
+            section = "TV"
+            area = "guide"
+            openChannel(title)
+        } else {
+            val target = if (title.kind == ContentKind.SERIES) ContentKind.SERIES else ContentKind.MOVIE
+            section = if (target == ContentKind.SERIES) "Shows" else "Movies"
+            vodCategory = null; vodCategoryLabel = null
+            movieSearch = ""; movieSearchDraft = ""; movieSearchOpen = false; movieSortOpen = false
+            movieSort = "added"
+            focusedPosterIndex = -1; focusedEpisodeIndex = -1
+            // The detail branch needs a matching displayed page before it renders.
+            model.loadSection(target, ordering = movieSort)
+            area = "content"
+            vodTitle = title
         }
     }
 
@@ -297,6 +405,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         movieSearch = ""; movieSearchDraft = ""; movieSearchOpen = false; movieSortOpen = false
         highlightedMovieId = null; movieSort = "added"
         focusedPosterIndex = -1
+        focusedEpisodeIndex = -1
         model.loadSection(kind, category, ordering = movieSort)
     }
 
@@ -498,7 +607,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             "guide" -> area = "groups"
             "groups" -> area = "menu"
             "content" -> if (vodTitle != null) {
-                    vodTitle = null; area = "groups"; returnToGroups = true
+                    vodTitle = null; focusedEpisodeIndex = -1; area = "groups"; returnToGroups = true
                 }
                 else area = if (section == "Movies" || section == "Shows") "groups" else "menu"
         }
@@ -811,11 +920,16 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     if (it.hasFocus && section in listOf("Movies", "Shows") && area == "groups") area = "content"
                 }
                 .onPreviewKeyEvent {
+                    // An episode row handles Left itself so focus steps one poster
+                    // back. In a detail only the first episode (or a non-poster
+                    // element) hands Left to the side menu; the browse index is
+                    // stale once a title is open.
+                    val atStart = if (vodTitle != null) focusedEpisodeIndex <= 0
+                    else focusedPosterIndex == 0 ||
+                        (focusedPosterIndex == -2 && (state as? LoadState.Ready<Catalogue>)
+                            ?.value?.titles?.none { title -> title.kind == vodKind } == true)
                     if (vodKind != null && area == "content" && !movieSortOpen &&
-                        it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft &&
-                        (vodTitle != null || focusedPosterIndex == 0 ||
-                            (focusedPosterIndex == -2 && (state as? LoadState.Ready<Catalogue>)
-                                ?.value?.titles?.none { title -> title.kind == vodKind } == true))) {
+                        it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && atStart) {
                         area = "groups"
                         true
                     } else false
@@ -899,16 +1013,37 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                         })
                     }
                     "Search" -> {
-                        BasicTextField(search, { search = it }, singleLine = true,
-                            textStyle = TextStyle(color = Color.White, fontSize = 20.sp),
-                            modifier = Modifier.fillMaxWidth().focusRequester(searchFocus)
-                                .background(cell, RoundedCornerShape(6.dp)).padding(16.dp))
-                        if (state is LoadState.Ready) {
-                            (state as LoadState.Ready<Catalogue>).value.titles
-                                .filter { it.kind == ContentKind.CHANNEL && it.name.contains(search, ignoreCase = true) }
-                                .take(30).forEach { title -> GuideAction(title.name, onClick = {
-                                    group = null; section = "TV"; area = "guide"; openChannel(title)
-                                }) }
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Search channels, movies, and shows", color = muted, fontSize = 16.sp)
+                            BasicTextField(search, { search = it }, singleLine = true,
+                                textStyle = TextStyle(color = Color.White, fontSize = 20.sp),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus)
+                                    .onFocusChanged { if (it.isFocused) keyboardController?.show() }
+                                    .onPreviewKeyEvent {
+                                        if (it.type == KeyEventType.KeyDown &&
+                                            (it.key == Key.Enter || it.key == Key.DirectionDown))
+                                            keyboardController?.hide()
+                                        false
+                                    }
+                                    .background(cell, RoundedCornerShape(6.dp)).padding(16.dp))
+                            val results = searchResults
+                            when {
+                                results.loading -> TvInlineStatus("Searching…", loading = true)
+                                results.message != null -> TvInlineStatus(results.message.orEmpty(), loading = false)
+                                search.isBlank() -> Text("Type a title to find channels, movies and shows.", color = muted)
+                                results.isEmpty -> Text("No matches for “${search.trim()}”", color = muted)
+                                else -> {
+                                    SearchResultGroup("Channels", results.channels,
+                                        results.channelsTruncated, ::openSearchResult)
+                                    SearchResultGroup("Movies", results.movies,
+                                        results.moviesTruncated, ::openSearchResult)
+                                    SearchResultGroup("Shows", results.shows,
+                                        results.showsTruncated, ::openSearchResult)
+                                }
+                            }
                         }
                     }
                     "Movies", "Shows" -> {
@@ -960,7 +1095,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                                 guideFocus else heroFocus)
                                             .onFocusChanged {
                                                 heroFocused = it.isFocused
-                                                if (it.isFocused) scope.launch { detailListState.scrollToItem(0) }
+                                                if (it.isFocused) {
+                                                    focusedEpisodeIndex = -1
+                                                    scope.launch { detailListState.scrollToItem(0) }
+                                                }
                                             }
                                             .semantics { contentDescription = if (title.kind == ContentKind.SERIES)
                                                 "Show details" else "Movie details" }
@@ -978,13 +1116,15 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                         Spacer(Modifier.weight(1f))
                                         if (title.kind == ContentKind.MOVIE) {
                                             GuideAction("Play movie", modifier = Modifier.width(220.dp)
-                                                .focusRequester(guideFocus).focusProperties { up = heroFocus }) {
+                                                .focusRequester(guideFocus).focusProperties { up = heroFocus }
+                                                .onFocusChanged { if (it.isFocused) focusedEpisodeIndex = -1 }) {
                                                 playVod(title)
                                             }
                                         } else if (firstEpisode != null) {
                                             GuideAction("Play S${seasons.first().number} E1",
                                                 modifier = Modifier.width(220.dp).focusRequester(guideFocus)
-                                                    .focusProperties { up = heroFocus }) {
+                                                    .focusProperties { up = heroFocus }
+                                                    .onFocusChanged { if (it.isFocused) focusedEpisodeIndex = -1 }) {
                                                 playVod(firstEpisode)
                                             }
                                         }
@@ -1012,15 +1152,18 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                                     items(page.episodes.size, key = { page.episodes[it].id }) { index ->
                                                         val episode = page.episodes[index]
                                                         EpisodePoster(episode.copy(artworkKey = episode.artworkKey ?: title.artworkKey),
-                                                            index + 1, Modifier.width(215.dp)) { playVod(episode) }
+                                                            index + 1, Modifier.width(215.dp)
+                                                                .onFocusChanged { if (it.isFocused) focusedEpisodeIndex = index }) {
+                                                            playVod(episode)
+                                                        }
                                                     }
                                                     if (page.hasMore || page.error != null || page.loading) {
                                                         item(key = "more") {
                                                             if (page.loading) TvInlineStatus("Loading more episodes…", loading = true)
                                                             else GuideAction(if (page.error != null) "Retry" else "Load more",
-                                                                modifier = Modifier.width(160.dp), onClick = {
-                                                                    loadEpisodes(title, season, page.page + 1)
-                                                                })
+                                                                modifier = Modifier.width(160.dp)
+                                                                    .onFocusChanged { if (it.isFocused) focusedEpisodeIndex = -1 },
+                                                                onClick = { loadEpisodes(title, season, page.page + 1) })
                                                         }
                                                     }
                                                 }
@@ -1031,7 +1174,8 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                 if (title.kind == ContentKind.MOVIE) {
                                     item(key = "back") {
                                         GuideAction("Back to $section", modifier = Modifier.width(220.dp)) {
-                                            vodTitle = null; area = "groups"; returnToGroups = true
+                                            vodTitle = null; focusedEpisodeIndex = -1
+                                            area = "groups"; returnToGroups = true
                                         }
                                     }
                                 }
@@ -1143,7 +1287,9 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                                     .onFocusChanged { if (it.isFocused) {
                                                         footerFocused = false; highlightedMovieId = title.id
                                                         focusedPosterIndex = index; area = "content"
-                                                } }, showDetails = false) { vodTitle = title }
+                                                } }, showDetails = false) {
+                                                focusedEpisodeIndex = -1; vodTitle = title
+                                            }
                                             }
                                             if (loaded.value.hasMore || loadingNext || footerFocused) {
                                                 item(key = "load-more") {
@@ -1172,7 +1318,9 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                                 .then(if (title.id == appendedFocusId) Modifier.focusRequester(appendedFocus) else Modifier)
                                                 .onFocusChanged { if (it.isFocused) {
                                                     footerFocused = false; highlightedMovieId = title.id
-                                                } }) { vodTitle = title }
+                                                } }) {
+                                                focusedEpisodeIndex = -1; vodTitle = title
+                                            }
                                         }
                                         if (loaded.value.hasMore || loadingNext || footerFocused) {
                                             item(key = "load-more") {
@@ -1228,6 +1376,20 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         }
     }
     }
+}
+
+@Composable
+private fun SearchResultGroup(label: String, titles: List<Title>, truncated: Boolean,
+    onSelect: (Title) -> Unit) {
+    if (titles.isEmpty()) return
+    Text(label, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 8.dp))
+    titles.forEach { title ->
+        GuideAction(title.name, modifier = Modifier.semantics { contentDescription = title.name }) {
+            onSelect(title)
+        }
+    }
+    if (truncated) Text("Showing first ${titles.size} matches", color = muted, fontSize = 12.sp)
 }
 
 @Composable
