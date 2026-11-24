@@ -45,6 +45,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -491,6 +493,7 @@ fun ProfileSetup() {
     val store = remember { ProfileStore(context) }
     val viewerStore = remember { ViewerProfileStore(context) }
     val categoryStore = remember { VodCategoryKindStore(context) }
+    val channelIndexStore = remember { ChannelIndexStore(context) }
     var viewerProfiles by remember { mutableStateOf<List<ViewerProfile>>(emptyList()) }
     var activeViewer by remember { mutableStateOf<ViewerProfile?>(null) }
     var viewerName by remember { mutableStateOf("") }
@@ -513,9 +516,13 @@ fun ProfileSetup() {
     var sessionEpoch by remember { mutableIntStateOf(0) }
     var sessionCategoryKinds by remember { mutableStateOf<Map<String, ContentKind>>(emptyMap()) }
     var sessionVodCategories by remember { mutableStateOf<List<Category>?>(null) }
+    var sessionChannelIndex by remember { mutableStateOf<List<ChannelIndexEntry>?>(null) }
     var scanningCategories by remember { mutableStateOf(false) }
     var scannedCategories by remember { mutableIntStateOf(0) }
     var totalCategories by remember { mutableIntStateOf(0) }
+    var indexingChannels by remember { mutableStateOf(false) }
+    var indexedChannels by remember { mutableIntStateOf(0) }
+    var channelIndexNotice by remember { mutableStateOf<String?>(null) }
     var reconnectProfile by remember { mutableStateOf<PortalProfile?>(null) }
     var reconnectRefreshCategories by remember { mutableStateOf(false) }
     var processedCounts by remember { mutableStateOf<PortalCounts?>(null) }
@@ -546,6 +553,33 @@ fun ProfileSetup() {
             scanningCategories = false
         }
     }
+    /**
+     * Reuses a completed index, or builds and persists it once. A failed build
+     * never replaces a previous index and never blocks the playlist connection.
+     */
+    suspend fun loadOrBuildChannelIndex(profile: PortalProfile, verified: VerifiedPortal,
+        force: Boolean): List<ChannelIndexEntry>? {
+        val existing = withContext(Dispatchers.IO) { channelIndexStore.load(profile) }
+        if (!force && existing != null) return existing
+        indexingChannels = true
+        indexedChannels = existing?.size ?: 0
+        channelIndexNotice = null
+        return try {
+            val entries = scanChannelIndex(profile, verified, container) { indexedChannels = it }
+            withContext(Dispatchers.IO) { channelIndexStore.save(profile, entries) }
+            indexedChannels = entries.size
+            entries
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG,
+                "stage=channel.index failure=${error.javaClass.simpleName}")
+            channelIndexNotice = "Channel search is unavailable. Refresh the playlist to rebuild its index."
+            existing
+        } finally {
+            indexingChannels = false
+        }
+    }
     /** Connect and Refresh playlist both replace the whole in-memory session. */
     fun installSession(verified: VerifiedPortal) {
         sessionApiHost = verified.apiHost
@@ -561,9 +595,13 @@ fun ProfileSetup() {
         sessionWatchdogSeconds = null
         sessionCategoryKinds = emptyMap()
         sessionVodCategories = null
+        sessionChannelIndex = null
         scanningCategories = false
         scannedCategories = 0
         totalCategories = 0
+        indexingChannels = false
+        indexedChannels = 0
+        channelIndexNotice = null
         reconnectProfile = profile
         reconnectRefreshCategories = refreshCategoryMap
         busy = true
@@ -582,16 +620,24 @@ fun ProfileSetup() {
                 }
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=playlist.connect verified=true")
                 if (refreshCategoryMap) {
-                    stage = "vod.category_scan"
-                    val scan = scanAndStoreCategoryKinds(profile, verified)
-                    sessionCategoryKinds = scan.kinds
-                    sessionVodCategories = scan.categories
+                    stage = "playlist.scan"
+                    // The category scan and the complete channel index are independent.
+                    coroutineScope {
+                        val categories = async { scanAndStoreCategoryKinds(profile, verified) }
+                        val channels = async { loadOrBuildChannelIndex(profile, verified, force = true) }
+                        val scan = categories.await()
+                        sessionCategoryKinds = scan.kinds
+                        sessionVodCategories = scan.categories
+                        sessionChannelIndex = channels.await()
+                    }
                 } else {
                     val stored = withContext(Dispatchers.IO) {
                         categoryStore.load(profile).orEmpty() to categoryStore.loadCategories(profile)
                     }
                     sessionCategoryKinds = stored.first
                     sessionVodCategories = stored.second
+                    stage = "channel.index"
+                    sessionChannelIndex = loadOrBuildChannelIndex(profile, verified, force = false)
                 }
                 installSession(verified)
                 reconnectProfile = null
@@ -607,6 +653,7 @@ fun ProfileSetup() {
                 else "Connection failed. Check the host, registration and server, then retry."
             } finally {
                 scanningCategories = false
+                indexingChannels = false
                 busy = false
             }
         }
@@ -632,6 +679,7 @@ fun ProfileSetup() {
                 if (!viewerStore.initialized()) {
                     store.clear()
                     categoryStore.clear()
+                    channelIndexStore.clear()
                     viewerStore.initialize()
                 }
                 viewerStore.load() to store.load()
@@ -698,6 +746,7 @@ fun ProfileSetup() {
         sessionWatchdogSeconds = null
         sessionCategoryKinds = emptyMap()
         sessionVodCategories = null
+        sessionChannelIndex = null
         screen = "viewerChooser"
     }
     BackHandler(screen !in listOf("landing", "home", "connecting", "viewerChooser", "viewerCreate")) {
@@ -721,11 +770,12 @@ fun ProfileSetup() {
     if (screen == "home" && connectedProfile != null && connectedToken != null &&
         activeApiHost != null && portalSession != null) {
         val session = portalSession
-        val repository = remember(session, sessionCategoryKinds, sessionVodCategories) {
+        val repository = remember(session, sessionCategoryKinds, sessionVodCategories, sessionChannelIndex) {
             StalkerContentRepository(connectedProfile.copy(host = activeApiHost), session,
-                sessionCategoryKinds, sessionVodCategories) { categories ->
+                sessionCategoryKinds, initialVodCategories = sessionVodCategories,
+                onVodCategoriesLoaded = { categories ->
                     categoryStore.saveCategories(connectedProfile, categories)
-                }
+                }, initialChannelIndex = sessionChannelIndex)
         }
         val container = remember(repository) { com.ykinger.stalkertv.AppContainer(repository) }
         key(homeInstance) {
@@ -739,6 +789,7 @@ fun ProfileSetup() {
                     sessionWatchdogSeconds = null
                     sessionCategoryKinds = emptyMap()
                     sessionVodCategories = null
+                    sessionChannelIndex = null
                     activeViewer = null
                     screen = "viewerChooser"
                 })
@@ -834,6 +885,9 @@ fun ProfileSetup() {
                 Text("Channels: ${processedCounts?.channels ?: "Count unavailable"}", color = Color.White)
                 Text("Movies + shows: ${processedCounts?.moviesAndShows ?: "Count unavailable"}", color = Color.White)
                 Text("Movie and show categories classified during scan", color = settingsMuted)
+                Text("Channel search index: ${sessionChannelIndex?.size?.toString() ?: "Unavailable"}",
+                    color = settingsMuted)
+                channelIndexNotice?.let { Text(it, color = Color(0xFFF3D5B3)) }
                 Spacer(Modifier.height(24.dp))
                 ProfileField("Playlist name", processedName, !busy) { processedName = it }
                 if (message.startsWith("Could not save playlist name") || message.startsWith("Enter a playlist name"))
@@ -869,10 +923,13 @@ fun ProfileSetup() {
         "connecting" -> Box(Modifier.fillMaxSize().background(settingsBackground), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 val scanning = busy && scanningCategories
+                val indexing = busy && indexingChannels
                 TvStatusPanel(
                     when {
                         !busy -> "Could not connect"
+                        scanning && indexing -> "Preparing search indexes…"
                         scanning -> "Scanning categories…"
+                        indexing -> "Indexing channels…"
                         else -> "Connecting to playlist…"
                     },
                     when {
@@ -880,6 +937,7 @@ fun ProfileSetup() {
                         scanning && totalCategories > 0 ->
                             "Scanning $scannedCategories of $totalCategories categories"
                         scanning -> "Reading the portal category list"
+                        indexing -> "Indexed $indexedChannels channels for search"
                         else -> "Checking your portal and preparing the guide"
                     },
                     loading = busy, modifier = Modifier.width(480.dp), shape = TvStatusShape.NONE,
@@ -890,6 +948,10 @@ fun ProfileSetup() {
                     retryModifier = Modifier.focusRequester(firstFocus),
                     progress = if (scanning && totalCategories > 0)
                         scannedCategories.toFloat() / totalCategories else null)
+                if (indexing) {
+                    TvInlineStatus("Indexed $indexedChannels channels", loading = true)
+                }
+                channelIndexNotice?.let { Text(it, color = Color(0xFFF3D5B3)) }
                 if (!busy) {
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }
                 }
@@ -1012,6 +1074,7 @@ fun ProfileSetup() {
                                 val updated = playlists.toMutableList().apply { this[index] = candidate }
                                 withContext(Dispatchers.IO) {
                                     store.save(updated, if (wasSelected) index else store.selectedIndex())
+                                    if (credentialsChanged) channelIndexStore.remove(original)
                                 }
                                 playlists = updated
                                 if (wasSelected) {
@@ -1022,6 +1085,7 @@ fun ProfileSetup() {
                                         sessionWatchdogSeconds = null
                                         sessionCategoryKinds = emptyMap()
                                         sessionVodCategories = null
+                                        sessionChannelIndex = null
                                         reconnectProfile = candidate
                                     }
                                 }
@@ -1053,6 +1117,7 @@ fun ProfileSetup() {
                                 sessionWatchdogSeconds = null
                                 sessionCategoryKinds = emptyMap()
                                 sessionVodCategories = null
+                                sessionChannelIndex = null
                                 reconnectProfile = null
                                 message = "No playlist selected. Not connected."
                             } catch (_: Exception) {
@@ -1127,6 +1192,9 @@ fun ProfileSetup() {
                             scannedCategories.toFloat() / totalCategories,
                             Modifier.fillMaxWidth())
                     }
+                    if (busy && indexingChannels) {
+                        TvInlineStatus("Indexed $indexedChannels channels for search", loading = true)
+                    }
                 }
                 Column(Modifier.weight(0.55f).fillMaxHeight().background(settingsBackground).padding(20.dp),
                     verticalArrangement = Arrangement.Center) {
@@ -1154,16 +1222,26 @@ fun ProfileSetup() {
                     sessionWatchdogSeconds = null
                     sessionCategoryKinds = emptyMap()
                     sessionVodCategories = null
+                    sessionChannelIndex = null
                     scanningCategories = false
                     scannedCategories = 0
                     totalCategories = 0
+                    indexingChannels = false
+                    indexedChannels = 0
+                    channelIndexNotice = null
                     message = "Testing connection…"
                     scope.launch {
                         var stage = "portal.verify"
                         try {
                             val verified = withContext(Dispatchers.IO) { testPortal(candidate, container) }
-                            stage = "vod.category_scan"
-                            val scan = scanAndStoreCategoryKinds(candidate, verified)
+                            stage = "playlist.scan"
+                            // First Add builds both indexes concurrently; an index
+                            // failure must not prevent the playlist from being saved.
+                            val (scan, channelIndex) = coroutineScope {
+                                val categories = async { scanAndStoreCategoryKinds(candidate, verified) }
+                                val channels = async { loadOrBuildChannelIndex(candidate, verified, force = true) }
+                                categories.await() to channels.await()
+                            }
                             stage = "portal.counts"
                             val counts = withContext(Dispatchers.IO) {
                                 portalCounts(candidate, verified, container)
@@ -1175,6 +1253,7 @@ fun ProfileSetup() {
                             playlists = updated
                             sessionCategoryKinds = scan.kinds
                             sessionVodCategories = scan.categories
+                            sessionChannelIndex = channelIndex
                             installSession(verified)
                             processedCounts = counts
                             processedName = URI(candidate.host).host ?: "Stalker Portal"
@@ -1200,7 +1279,10 @@ fun ProfileSetup() {
                         } catch (error: Exception) {
                             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                             message = "Connection or save failed. Check registration, host, and portal response."
-                        } finally { busy = false }
+                        } finally {
+                            indexingChannels = false
+                            busy = false
+                        }
                     }
                     }) { Text(if (busy) "Testing…" else "Next") }
                     Spacer(Modifier.height(12.dp))

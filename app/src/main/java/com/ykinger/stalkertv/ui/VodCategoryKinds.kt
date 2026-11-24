@@ -126,12 +126,14 @@ internal fun decodeVodCategories(raw: String): List<Category> = try {
     emptyList()
 }
 
-/** The stored key is a one-way digest, so credentials never enter the plain preferences. */
-internal fun categoryKindKey(profile: PortalProfile): String {
+/** The stored key is a one-way digest, so credentials never enter plain storage. */
+internal fun playlistStorageKey(profile: PortalProfile): String {
     val identity = "${profile.host}\n${profile.mac}\n${profile.serial}"
     val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
     return "playlist:" + digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 }
+
+internal fun categoryKindKey(profile: PortalProfile): String = playlistStorageKey(profile)
 
 /** Plain app-private storage: category IDs, names, and movie/show labels only. */
 internal class VodCategoryKindStore(context: Context) {

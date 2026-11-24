@@ -6,6 +6,7 @@ import com.ykinger.stalkertv.core.*
 import java.net.URI
 import java.net.URLEncoder
 import java.time.Instant
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -22,7 +23,8 @@ internal class StalkerContentRepository(
     private val categoryKinds: Map<String, ContentKind> = emptyMap(),
     initialVodCategories: List<Category>? = null,
     private val onVodCategoriesLoaded: (List<Category>) -> Unit = {},
-) : PagedContentRepository, VodCategoryKindSource {
+    initialChannelIndex: List<ChannelIndexEntry>? = null,
+) : PagedContentRepository, VodCategoryKindSource, SearchContentRepository {
     private data class EpisodeReference(val seriesId: String, val seasonId: String,
         val episodeId: String, val seriesNumber: String?)
     override fun categoryKind(categoryId: String): ContentKind? = categoryKinds[categoryId]
@@ -30,10 +32,35 @@ internal class StalkerContentRepository(
     private var titles = emptyList<Title>()
     private var commands = emptyMap<String, String>()
     private var episodeParents = emptyMap<String, EpisodeReference>()
+    private val channelIndex: List<ChannelIndexEntry> = initialChannelIndex.orEmpty()
+    private val searchableChannels: List<Pair<ChannelIndexEntry, String>> =
+        initialChannelIndex?.map { it to it.name.lowercase(Locale.ROOT) }.orEmpty()
+
+    init {
+        initialChannelIndex?.forEach { entry ->
+            entry.command?.let { commands = commands + (entry.id to it) }
+        }
+    }
+
     private val categoriesMutex = Mutex()
+    private val titlesMutex = Mutex()
     private val categoryCache = mutableMapOf<String, List<Category>>().apply {
         if (initialVodCategories != null) put("vod", initialVodCategories)
     }
+
+    private suspend fun rememberTitles(newTitles: List<Title>) = titlesMutex.withLock {
+        titles = (titles + newTitles).distinctBy { it.id }
+    }
+
+    private suspend fun rememberTitle(id: String): Title? = titlesMutex.withLock {
+        titles.firstOrNull { it.id == id }
+    }
+
+    private suspend fun displayName(id: String): String =
+        rememberTitle(id)?.name ?: channelIndex.firstOrNull { it.id == id }?.name ?: id
+
+    private suspend fun isKnownChannel(id: String): Boolean =
+        rememberTitle(id)?.kind == ContentKind.CHANNEL || channelIndex.any { it.id == id }
 
     private suspend fun <T> safely(stage: String, block: suspend () -> ProviderResult<T>): ProviderResult<T> =
         withContext(Dispatchers.IO) {
@@ -49,6 +76,36 @@ internal class StalkerContentRepository(
         }
 
     override suspend fun catalogue(): ProviderResult<Catalogue> = loadPage(ContentKind.CHANNEL, null, 1)
+
+    override suspend fun searchChannels(query: String, limit: Int): ProviderResult<SearchBatch> =
+        safely("search.channels") {
+            val term = query.trim()
+            if (term.isBlank()) return@safely ProviderResult.Success(SearchBatch(emptyList()))
+            if (searchableChannels.isEmpty()) return@safely ProviderResult.Failure(
+                "Channel index is not available. Refresh the playlist to build it.")
+            val lowered = term.lowercase(Locale.ROOT)
+            val matches = searchableChannels.filter { it.second.contains(lowered) }
+                .map { it.first.toTitle() }
+            ProviderResult.Success(SearchBatch(matches.take(limit), matches.size > limit))
+        }
+
+    /** One mixed VOD query per page; TiviMate's duplicate movie/show request is unnecessary. */
+    override suspend fun searchVod(query: String, page: Int): ProviderResult<SearchBatch> =
+        safely("search.vod") {
+            require(page in 1..250)
+            val term = query.trim().ifBlank { return@safely ProviderResult.Success(SearchBatch(emptyList())) }
+            val response = session.request(
+                "type=vod&action=get_ordered_list&category=0&sortby=name" +
+                    "&search=${URLEncoder.encode(term, "UTF-8")}&p=$page&JsHttpRequest=1-xml")
+            val result = response as? JSONObject ?: return@safely ProviderResult.Unsupported
+            val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
+            val pageTitles = parseRows(rows, kindHint = null, categoryId = null)
+            val total = result.optInt("total_items", -1)
+            val pageSize = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
+            val hasMore = rows.length() > 0 && page < 250 &&
+                (if (total >= 0) page.toLong() * pageSize < total else rows.length() >= pageSize)
+            ProviderResult.Success(SearchBatch(pageTitles, hasMore))
+        }
 
     /** Fetch only the currently visible section/category/page; navigation requests the rest. */
     override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> =
@@ -104,26 +161,7 @@ internal class StalkerContentRepository(
             }
             val result = response as? JSONObject ?: return@safely ProviderResult.Unsupported
             val rows = result.optJSONArray("data") ?: error("Portal page has no data array.")
-            val pageTitles = (0 until rows.length()).mapNotNull { index ->
-                val row = rows.optJSONObject(index) ?: return@mapNotNull null
-                val rawId = row.optString("id").takeUnless { it.isBlank() || it == "null" } ?: return@mapNotNull null
-                val itemKind = if (kind == ContentKind.CHANNEL) kind else if (
-                    row.optInt("is_series") == 1 || row.optString("movie_type") == "series") ContentKind.SERIES
-                    else ContentKind.MOVIE
-                val id = if (kind == ContentKind.CHANNEL) rawId else
-                    "${if (itemKind == ContentKind.SERIES) "series" else "movie"}:$rawId"
-                row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }?.let { commands = commands + (id to it) }
-                val itemCategory = row.optString(if (kind == ContentKind.CHANNEL) "tv_genre_id" else "category_id")
-                    .takeIf { it.isNotBlank() && it != "null" } ?: categoryId.orEmpty()
-                val artwork = listOf("pic", "screenshot_uri").firstNotNullOfOrNull { field ->
-                    row.optString(field).takeUnless { it.isBlank() || it in setOf("null", "0", "false") }
-                        ?.let { posterAddress(profile.host, it) }
-                }
-                Title(id, row.optString("name").ifBlank { "Title $rawId" }, itemKind, itemCategory,
-                    row.optString("description").ifBlank { null }, artwork,
-                    row.optString("year").toIntOrNull())
-            }.filter { kind == ContentKind.CHANNEL || categoryId != null || it.kind == kind }
-            titles = (titles + pageTitles).distinctBy { it.id }
+            val pageTitles = parseRows(rows, kindHint = kind, categoryId = categoryId)
             val total = result.optInt("total_items", -1)
             val pageSize = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
             val hasMore = rows.length() > 0 && page < 250 &&
@@ -136,6 +174,46 @@ internal class StalkerContentRepository(
             val visibleTotal = total.takeIf { it >= 0 && (kind == ContentKind.CHANNEL || categoryId != null) }
             ProviderResult.Success(Catalogue(categories, pageTitles, hasMore, visibleTotal))
         }
+
+    /**
+     * Shared row mapping for browsing and global VOD search. Search passes a null
+     * hint because one server query mixes movies and shows; the UI splits them.
+     */
+    private suspend fun parseRows(rows: JSONArray, kindHint: ContentKind?,
+        categoryId: String?): List<Title> {
+        val parsed = (0 until rows.length()).mapNotNull { index ->
+            val row = rows.optJSONObject(index) ?: return@mapNotNull null
+            val rawId = row.optString("id").takeUnless { it.isBlank() || it == "null" } ?: return@mapNotNull null
+            val isChannelRow = kindHint == ContentKind.CHANNEL
+            val itemKind = if (isChannelRow) ContentKind.CHANNEL else if (
+                row.optInt("is_series") == 1 || row.optBoolean("is_series") ||
+                    row.optString("movie_type") == "series") ContentKind.SERIES else ContentKind.MOVIE
+            val id = if (isChannelRow) rawId else
+                "${if (itemKind == ContentKind.SERIES) "series" else "movie"}:$rawId"
+            val command = row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }
+            val itemCategory = row.optString(if (isChannelRow) "tv_genre_id" else "category_id")
+                .takeIf { it.isNotBlank() && it != "null" } ?: categoryId.orEmpty()
+            val artwork = listOf("pic", "screenshot_uri").firstNotNullOfOrNull { field ->
+                row.optString(field).takeUnless { it.isBlank() || it in setOf("null", "0", "false") }
+                    ?.let { posterAddress(profile.host, it) }
+            }
+            val title = Title(id, row.optString("name").ifBlank { "Title $rawId" }, itemKind, itemCategory,
+                row.optString("description").ifBlank { null }, artwork,
+                row.optString("year").toIntOrNull())
+            title to command
+        }
+        // All VOD categories are kind-specific, but an unfiltered All page is
+        // mixed. Only the latter needs the requested kind applied locally.
+        val visible = if (kindHint == null || kindHint == ContentKind.CHANNEL || categoryId != null) parsed else
+            parsed.filter { it.first.kind == kindHint }
+        titlesMutex.withLock {
+            visible.forEach { (title, command) ->
+                if (command != null) commands = commands + (title.id to command)
+            }
+            titles = (titles + visible.map { it.first }).distinctBy { it.id }
+        }
+        return visible.map { it.first }
+    }
 
     override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = safely("playback.resolve") {
         val episodeReference = episodeParents[id]
@@ -230,14 +308,20 @@ internal class StalkerContentRepository(
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=playback.resolve link=accepted type=$type")
         // The working movie player sends no portal token, MAC cookie or Referer
         // to the media host. Only its observed media identity is used here.
-        ProviderResult.Success(PlaybackSource(url, titles.first { it.id == id }.name,
+        ProviderResult.Success(PlaybackSource(url, displayName(id),
             if (movieLinkOptions) mapOf("User-Agent" to "Lavf53.32.100", "Connection" to "Keep-Alive",
                 "Accept-Encoding" to "gzip") else emptyMap()))
     }
-    override suspend fun details(id: String): ProviderResult<Title> =
-        titles.find { it.id == id }?.let { ProviderResult.Success(it) } ?: ProviderResult.Empty
+
+    override suspend fun details(id: String): ProviderResult<Title> {
+        val known = rememberTitle(id)
+        if (known != null) return ProviderResult.Success(known)
+        return channelIndex.firstOrNull { it.id == id }?.toTitle()
+            ?.let { ProviderResult.Success(it) } ?: ProviderResult.Empty
+    }
+
     override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = safely("catalogue.seasons") {
-        if (titles.none { it.id == seriesId && it.kind == ContentKind.SERIES }) return@safely ProviderResult.Empty
+        if (rememberTitle(seriesId)?.kind != ContentKind.SERIES) return@safely ProviderResult.Empty
         val rawId = seriesId.removePrefix("series:")
         val seasons = mutableListOf<Season>()
         for (page in 1..10) {
@@ -265,7 +349,7 @@ internal class StalkerContentRepository(
 
     override suspend fun episodes(seriesId: String, seasonId: String, page: Int): ProviderResult<EpisodePage> =
         safely("catalogue.episodes") {
-            if (page !in 1..250 || titles.none { it.id == seriesId && it.kind == ContentKind.SERIES })
+            if (page !in 1..250 || rememberTitle(seriesId)?.kind != ContentKind.SERIES)
                 return@safely ProviderResult.Empty
             val rawId = URLEncoder.encode(seriesId.removePrefix("series:"), "UTF-8")
             val rawSeason = URLEncoder.encode(seasonId, "UTF-8")
@@ -289,7 +373,7 @@ internal class StalkerContentRepository(
                 Title(id, row.optString("name").ifBlank { "Episode ${row.optInt("series_number", index + 1)}" },
                     ContentKind.EPISODE, seasonId, artworkKey = artwork)
             }
-            titles = (titles + items).distinctBy { it.id }
+            rememberTitles(items)
             val total = result.optInt("total_items", -1)
             val size = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
@@ -298,7 +382,7 @@ internal class StalkerContentRepository(
                 (if (total >= 0) page.toLong() * size < total else rows.length() >= size)))
         }
     override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = safely("guide.programmes") {
-        if (titles.none { it.id == channelId && it.kind == ContentKind.CHANNEL }) return@safely ProviderResult.Empty
+        if (!isKnownChannel(channelId)) return@safely ProviderResult.Empty
         val encodedId = URLEncoder.encode(channelId, "UTF-8")
         val rows = try {
             (session.request("type=epg&action=get_simple_data_table&ch_id=$encodedId&JsHttpRequest=1-xml") as JSONObject)

@@ -1,6 +1,7 @@
 package com.ykinger.stalkertv
 
 import com.ykinger.stalkertv.ui.PortalProfile
+import com.ykinger.stalkertv.ui.PortalSessionHolder
 import com.ykinger.stalkertv.ui.portalRequest
 import com.ykinger.stalkertv.ui.portalHeaders
 import com.ykinger.stalkertv.ui.vodHeaders
@@ -44,6 +45,13 @@ import kotlinx.coroutines.runBlocking
 
 /** JVM contract tests run in release so Android Log's debug stubs are never invoked. */
 class PortalClientTest {
+    private fun session(profile: PortalProfile, token: String) = PortalSessionHolder(
+        initialToken = token,
+        healthQuery = "",
+        transport = { query, current -> portalRequest(profile, query, current, AppContainer()) },
+        refreshSession = { token },
+    )
+
     @Test fun categoryScanClassifiesFirstPagesAndReportsProgress() = runBlocking {
         val server = MockWebServer()
         server.start()
@@ -100,7 +108,7 @@ class PortalClientTest {
                 "00:1A:79:00:00:01")
             val saved = listOf(Category("*", "All"), Category("42", "Movies"))
 
-            val page = (StalkerContentRepository(profile, "demo-token",
+            val page = (StalkerContentRepository(profile, session(profile, "demo-token"),
                 initialVodCategories = saved).loadPage(ContentKind.MOVIE, "42", 1)
                 as ProviderResult.Success).value
 
@@ -166,7 +174,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"Channel"}],"total_items":1}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val all = (repository.loadPage(ContentKind.CHANNEL, null, 1) as ProviderResult.Success).value
             assertEquals(listOf("42"), all.categories.map { it.id })
             assertEquals(emptyList<Any>(), all.titles)
@@ -186,7 +194,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Example"}]}"""))
             server.enqueue(MockResponse().setBody("""{"js":[]}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val page = (StalkerContentRepository(profile, "demo-token")
+            val page = (StalkerContentRepository(profile, session(profile, "demo-token"))
                 .loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value
             assertEquals(1, page.categories.size)
             assertEquals(emptyList<Any>(), page.titles)
@@ -202,7 +210,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[],"total_items":0}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val page = (StalkerContentRepository(profile, "demo-token")
+            val page = (StalkerContentRepository(profile, session(profile, "demo-token"))
                 .loadPage(ContentKind.MOVIE, "42", 1, "space hero", "rating") as ProviderResult.Success).value
             assertEquals(0, page.totalItems)
             server.takeRequest()
@@ -222,7 +230,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Movies"}]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"First","category_id":"42"}],"max_page_items":1,"total_items":"200"}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val page = (StalkerContentRepository(profile, "demo-token")
+            val page = (StalkerContentRepository(profile, session(profile, "demo-token"))
                 .loadPage(ContentKind.MOVIE, "42", 1) as ProviderResult.Success).value
             assertEquals(200, page.totalItems)
             assertEquals(true, page.hasMore)
@@ -408,7 +416,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"501","video_id":"101","is_file":1,"url":"https://cdn.example.test/other.m3u8","cmd":"https://cdn.example.test/other.m3u8","path":"storage/other.mpg"}],"total_items":1}}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"cmd":"https://cdn.example.test/101.m3u8"}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val movie = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value.titles.first()
             val source = (repository.resolve(movie.id) as ProviderResult.Success).value
             assertEquals("https://cdn.example.test/101.m3u8", source.uri)
@@ -451,7 +459,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":false}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"error":"nothing_to_play","cmd":""}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val movie = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value.titles.single()
             assertEquals(ProviderResult.Unsupported, repository.resolve(movie.id))
             assertEquals(4, server.requestCount)
@@ -488,7 +496,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"Channel","cmd":"ffmpeg http://localhost/ch/1"}],"total_items":1}}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"cmd":"ffmpeg https://example.test/live.m3u8"}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val channel = (repository.loadPage(ContentKind.CHANNEL, null, 1) as ProviderResult.Success).value.titles.single()
             assertEquals("https://example.test/live.m3u8",
                 (repository.resolve(channel.id) as ProviderResult.Success).value.uri)
@@ -513,7 +521,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"Film","pic":"/posters/film.jpg","screenshot_uri":"/frames/film.jpg"},{"id":"2","name":"Show","is_series":1,"pic":"","screenshot_uri":"/frames/show.jpg"}],"total_items":2}}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"1","name":"Film","pic":"/posters/film.jpg","screenshot_uri":"/frames/film.jpg"},{"id":"2","name":"Show","is_series":1,"pic":"","screenshot_uri":"/frames/show.jpg"}],"total_items":2}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val movie = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value.titles.single()
             val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
             assertEquals(server.url("/posters/film.jpg").toString(), movie.artworkKey)
@@ -529,7 +537,7 @@ class PortalClientTest {
             repeat(2) { server.enqueue(MockResponse().setBody(
                 """{"js":{"data":[{"id":"1","name":"Film","is_series":0},{"id":"2","name":"Show","is_series":1}],"total_items":200,"max_page_items":14}}""")) }
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val movies = (repository.loadPage(ContentKind.MOVIE, null, 1) as ProviderResult.Success).value
             val shows = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value
             assertEquals(listOf("Film"), movies.titles.map { it.name })
@@ -554,7 +562,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Hindi | Comedy"}]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Example","is_series":1}],"total_items":1}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             assertEquals(1, (repository.loadPage(ContentKind.SERIES, "42", 1, "", "added")
                 as ProviderResult.Success).value.titles.size)
             server.takeRequest() // categories, cached for subsequent pages
@@ -570,7 +578,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":[{"id":"42","title":"Hindi | Comedy"}]}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Example","is_series":0}],"total_items":1}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             assertEquals(1, (repository.loadPage(ContentKind.MOVIE, "42", 1, "Hindi comedy", "added")
                 as ProviderResult.Success).value.titles.size)
             server.takeRequest() // categories
@@ -588,7 +596,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"301","name":"Season 1","is_season":true,"season_number":1}],"total_items":1}}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"401","name":"First Episode","cmd":"/media/401.mpg","is_episode":true,"pic":"/posters/401.jpg"}],"total_items":2,"max_page_items":1}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
             val seasons = (repository.seasons(show.id) as ProviderResult.Success).value
             assertEquals(1, seasons.size)
@@ -623,7 +631,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"501","video_id":"201","is_file":true,"cmd":"selected-command"}]}}"""))
             server.enqueue(MockResponse().setBody("""{"js":{"cmd":"http://example.test/stream.m3u8"}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
             val season = (repository.seasons(show.id) as ProviderResult.Success).value.single()
             val episode = (repository.episodes(show.id, season.id, 1) as ProviderResult.Success).value.episodes.single()
@@ -665,7 +673,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"cmd":"http://example.test/second.m3u8"}}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(),
                 "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val show = (repository.loadPage(ContentKind.SERIES, null, 1)
                 as ProviderResult.Success).value.titles.single()
             val season = (repository.seasons(show.id) as ProviderResult.Success).value.single()
@@ -701,7 +709,7 @@ class PortalClientTest {
             server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Example Show","is_series":1}],"total_items":1}}"""))
             server.enqueue(MockResponse().setBody("""{"js":false}"""))
             val profile = PortalProfile("", server.url("/server/load.php").toString(), "00:1A:79:00:00:01")
-            val repository = StalkerContentRepository(profile, "demo-token")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
             val show = (repository.loadPage(ContentKind.SERIES, null, 1) as ProviderResult.Success).value.titles.single()
             assertEquals(ProviderResult.Unsupported, repository.seasons(show.id))
             assertEquals(3, server.requestCount)

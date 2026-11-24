@@ -18,9 +18,17 @@ class AppContainer(private val connectedRepository: ContentRepository? = null) {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .build()
+        // get_all_channels returns ~17 MiB and takes ~16s on a real portal. It must
+        // not inherit the ordinary 5s read timeout or the 1 MiB response limit.
+        private val sharedChannelIndexClient: OkHttpClient = sharedPortalClient.newBuilder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(120, TimeUnit.SECONDS)
+            .build()
     }
     val portalClient: OkHttpClient get() = sharedPortalClient
     val handshakeClient: OkHttpClient get() = sharedHandshakeClient
+    val channelIndexClient: OkHttpClient get() = sharedChannelIndexClient
     val repository: ContentRepository
         get() = requireNotNull(connectedRepository) { "No portal repository is connected." }
 }

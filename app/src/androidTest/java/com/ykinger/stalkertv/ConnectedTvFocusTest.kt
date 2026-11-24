@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ykinger.stalkertv.core.*
 import com.ykinger.stalkertv.ui.ConnectedTvScreen
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -582,26 +583,23 @@ class ConnectedTvFocusTest {
     }
 
     @Test fun globalSearchGroupsMatchesAcrossChannelsMoviesAndShows() {
-        val repository = object : PagedContentRepository {
-            override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
+        val channels = listOf(
+            Title("ch:1", "Alpha Channel", ContentKind.CHANNEL, "group"),
+            Title("ch:3", "Blue Channel", ContentKind.CHANNEL, "group"),
+            Title("ch:2", "Red Channel", ContentKind.CHANNEL, "group"),
+        )
+        val repository = object : SearchContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(emptyList(), channels))
             override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
-                loadPage(kind, categoryId, page, "", "")
-            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int,
-                search: String, sort: String): ProviderResult<Catalogue> = when {
-                kind == ContentKind.CHANNEL && page == 1 -> ProviderResult.Success(Catalogue(
-                    emptyList(), listOf(
-                        Title("ch:1", "Alpha Channel", ContentKind.CHANNEL, "group"),
-                        Title("ch:2", "Red Channel", ContentKind.CHANNEL, "group")),
-                    hasMore = true))
-                kind == ContentKind.CHANNEL -> ProviderResult.Success(Catalogue(emptyList(),
-                    listOf(Title("ch:3", "Blue Channel", ContentKind.CHANNEL, "group"))))
-                kind == ContentKind.MOVIE -> ProviderResult.Success(Catalogue(emptyList(),
-                    listOf(Title("movie:1", "Blue Movie", ContentKind.MOVIE, "drama"),
-                        Title("movie:2", "Red Movie", ContentKind.MOVIE, "drama"))))
-                kind == ContentKind.SERIES -> ProviderResult.Success(Catalogue(emptyList(),
-                    listOf(Title("show:1", "Blue Show", ContentKind.SERIES, "drama"))))
-                else -> ProviderResult.Unsupported
-            }
+                ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun searchChannels(query: String, limit: Int) = ProviderResult.Success(
+                SearchBatch(channels.filter { it.name.contains(query, ignoreCase = true) }.take(limit)))
+            override suspend fun searchVod(query: String, page: Int) = ProviderResult.Success(
+                if (page != 1) SearchBatch(emptyList()) else SearchBatch(listOf(
+                    Title("movie:1", "Blue Movie", ContentKind.MOVIE, "drama"),
+                    Title("show:1", "Blue Show", ContentKind.SERIES, "drama")).filter {
+                    it.name.contains(query, ignoreCase = true)
+                }))
             override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
             override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
             override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
@@ -627,6 +625,48 @@ class ConnectedTvFocusTest {
         compose.onNode(hasText("Blue Movie") and hasClickAction()).performClick()
         compose.waitUntil(5_000) {
             compose.onAllNodesWithText("Back to Movies").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    @Test fun globalSearchRendersFirstVodPageBeforeLaterPagesFinish() {
+        val secondPage = CompletableDeferred<Unit>()
+        val repository = object : SearchContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
+                ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun searchChannels(query: String, limit: Int) =
+                ProviderResult.Success(SearchBatch(listOf(
+                    Title("ch:1", "Blue Channel", ContentKind.CHANNEL, "group"))))
+            override suspend fun searchVod(query: String, page: Int) = when (page) {
+                1 -> ProviderResult.Success(SearchBatch(listOf(
+                    Title("movie:1", "Blue Movie", ContentKind.MOVIE, "drama"),
+                    Title("show:1", "Blue Show", ContentKind.SERIES, "drama")), hasMore = true))
+                else -> {
+                    secondPage.await()
+                    ProviderResult.Success(SearchBatch(emptyList()))
+                }
+            }
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        try {
+            compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+            compose.onNode(hasContentDescription("Search") and hasClickAction()).performClick()
+            compose.waitUntil(5_000) {
+                compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNode(hasSetTextAction()).performTextInput("Blue")
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText("Blue Channel").fetchSemanticsNodes().isNotEmpty() &&
+                    compose.onAllNodesWithText("Blue Movie").fetchSemanticsNodes().isNotEmpty() &&
+                    compose.onAllNodesWithText("Blue Show").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Searching…").assertDoesNotExist()
+            compose.onNodeWithText("Searching Movies…").assertDoesNotExist()
+        } finally {
+            secondPage.complete(Unit)
         }
     }
 }

@@ -95,6 +95,7 @@ import com.ykinger.stalkertv.core.ContentKind
 import com.ykinger.stalkertv.core.PlaybackSource
 import com.ykinger.stalkertv.core.PagedContentRepository
 import com.ykinger.stalkertv.core.ProviderResult
+import com.ykinger.stalkertv.core.SearchContentRepository
 import com.ykinger.stalkertv.core.Title
 import com.ykinger.stalkertv.core.Season
 import com.ykinger.stalkertv.core.Programme
@@ -104,6 +105,7 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 
@@ -123,17 +125,32 @@ private data class SeasonEpisodeState(
     val error: String? = null,
 )
 
-private data class GlobalSearchState(
-    val channels: List<Title> = emptyList(),
-    val movies: List<Title> = emptyList(),
-    val shows: List<Title> = emptyList(),
+private const val SEARCH_GROUP_LIMIT = 30
+
+private data class SearchGroupState(
+    val titles: List<Title> = emptyList(),
     val loading: Boolean = false,
     val message: String? = null,
-    val channelsTruncated: Boolean = false,
-    val moviesTruncated: Boolean = false,
-    val showsTruncated: Boolean = false,
+    val hasMore: Boolean = false,
+    val truncated: Boolean = false,
 ) {
-    val isEmpty get() = channels.isEmpty() && movies.isEmpty() && shows.isEmpty()
+    val isEmpty get() = titles.isEmpty()
+}
+
+private data class GlobalSearchState(
+    val channels: SearchGroupState = SearchGroupState(),
+    val movies: SearchGroupState = SearchGroupState(),
+    val shows: SearchGroupState = SearchGroupState(),
+) {
+    val isEmpty get() = channels.isEmpty && movies.isEmpty && shows.isEmpty
+    val anyLoading get() = channels.loading || movies.loading || shows.loading
+}
+
+private fun appendSearchTitles(group: SearchGroupState, incoming: List<Title>): SearchGroupState {
+    if (incoming.isEmpty()) return group
+    val merged = (group.titles + incoming).distinctBy { it.id }
+    return group.copy(titles = merged.take(SEARCH_GROUP_LIMIT),
+        truncated = merged.size > SEARCH_GROUP_LIMIT)
 }
 
 internal fun nearVodEnd(lastVisible: Int, visibleItems: Int, columns: Int, posters: Int): Boolean =
@@ -259,6 +276,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
 
     // Global search is independent of the single-page catalogue state so it can
     // span channels, movies and shows without disturbing the current section.
+    // Each group renders as soon as it has a response; no global spinner gates it.
     LaunchedEffect(search, section) {
         if (section != "Search") return@LaunchedEffect
         val query = search.trim()
@@ -266,67 +284,101 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             searchResults = GlobalSearchState()
             return@LaunchedEffect
         }
-        searchResults = GlobalSearchState(loading = true)
-        delay(300)
-        val repository = model.repository
-        val paged = repository as? PagedContentRepository
-        val channels = mutableListOf<Title>()
-        val movies = mutableListOf<Title>()
-        val shows = mutableListOf<Title>()
-        var message: String? = null
-        var channelsTruncated = false
-        var moviesTruncated = false
-        var showsTruncated = false
-        val maxPages = 12
-
-        // Some portals ignore the search parameter, so filter locally too.
-        suspend fun collect(kind: ContentKind, term: String, into: MutableList<Title>): Boolean {
-            var page = 1
-            while (page <= maxPages) {
-                when (val result = paged!!.loadPage(kind, null, page, term, "")) {
-                    is ProviderResult.Success -> {
-                        into += result.value.titles
-                        if (!result.value.hasMore) return false
-                        page++
-                    }
-                    is ProviderResult.Failure -> {
-                        if (message == null) message = result.message
-                        return false
-                    }
-                    else -> return false
-                }
-            }
-            return true
-        }
-
-        if (paged != null) {
-            if (collect(ContentKind.CHANNEL, "", channels)) channelsTruncated = true
-            if (collect(ContentKind.MOVIE, query, movies)) moviesTruncated = true
-            if (collect(ContentKind.SERIES, query, shows)) showsTruncated = true
-        } else {
-            when (val result = repository.catalogue()) {
-                is ProviderResult.Success -> {
-                    val all = result.value.titles
-                    channels += all.filter { it.kind == ContentKind.CHANNEL }
-                    movies += all.filter { it.kind == ContentKind.MOVIE }
-                    shows += all.filter { it.kind == ContentKind.SERIES }
-                }
-                is ProviderResult.Failure -> message = result.message
-                else -> Unit
-            }
+        fun publish(update: (GlobalSearchState) -> GlobalSearchState) {
+            // A newer query cancels this effect; never write stale results back.
+            if (isActive) searchResults = update(searchResults)
         }
         searchResults = GlobalSearchState(
-            channels = channels.filter { it.name.contains(query, ignoreCase = true) }
-                .distinctBy { it.id }.take(30),
-            movies = movies.filter { it.name.contains(query, ignoreCase = true) }
-                .distinctBy { it.id }.take(30),
-            shows = shows.filter { it.name.contains(query, ignoreCase = true) }
-                .distinctBy { it.id }.take(30),
-            channelsTruncated = channelsTruncated,
-            moviesTruncated = moviesTruncated,
-            showsTruncated = showsTruncated,
-            message = message,
+            channels = SearchGroupState(loading = true),
+            movies = SearchGroupState(loading = true),
+            shows = SearchGroupState(loading = true),
         )
+        val repository = model.repository
+        val quick = repository as? SearchContentRepository
+        if (quick != null) {
+            when (val result = quick.searchChannels(query, SEARCH_GROUP_LIMIT)) {
+                is ProviderResult.Success -> publish { state ->
+                    val batch = result.value
+                    state.copy(channels = appendSearchTitles(
+                        state.channels.copy(loading = false), batch.titles)
+                        .copy(hasMore = batch.hasMore))
+                }
+                is ProviderResult.Failure -> publish { state ->
+                    state.copy(channels = state.channels.copy(loading = false, message = result.message))
+                }
+                else -> publish { state ->
+                    state.copy(channels = state.channels.copy(loading = false,
+                        message = "Channel search is unavailable for this playlist."))
+                }
+            }
+            // Server-filtered VOD pages are mixed. One query per page serves both
+            // groups, and page one is published before any later page is requested.
+            var page = 1
+            var hasMore = true
+            while (hasMore && page <= 5) {
+                when (val result = quick.searchVod(query, page)) {
+                    is ProviderResult.Success -> {
+                        val batch = result.value
+                        val foundMovies = batch.titles.filter { it.kind != ContentKind.SERIES }
+                        val foundShows = batch.titles.filter { it.kind == ContentKind.SERIES }
+                        publish { state ->
+                            state.copy(
+                                movies = appendSearchTitles(state.movies, foundMovies)
+                                    .copy(loading = false, hasMore = batch.hasMore),
+                                shows = appendSearchTitles(state.shows, foundShows)
+                                    .copy(loading = false, hasMore = batch.hasMore),
+                            )
+                        }
+                        hasMore = batch.hasMore && batch.titles.isNotEmpty()
+                    }
+                    is ProviderResult.Failure -> {
+                        publish { state ->
+                            state.copy(
+                                movies = state.movies.copy(loading = false, message = result.message),
+                                shows = state.shows.copy(loading = false, message = result.message),
+                            )
+                        }
+                        hasMore = false
+                    }
+                    else -> {
+                        publish { state ->
+                            state.copy(
+                                movies = state.movies.copy(loading = false,
+                                    message = "VOD search is unavailable for this playlist."),
+                                shows = state.shows.copy(loading = false,
+                                    message = "VOD search is unavailable for this playlist."),
+                            )
+                        }
+                        hasMore = false
+                    }
+                }
+                page++
+            }
+        } else {
+            // Offline/demo repositories have no server search and no complete
+            // channel index. Their small local catalogue is still searchable.
+            when (val result = repository.catalogue()) {
+                is ProviderResult.Success -> publish { state ->
+                    fun local(kind: ContentKind): SearchGroupState {
+                        val matches = result.value.titles.filter {
+                            it.kind == kind && it.name.contains(query, ignoreCase = true)
+                        }.distinctBy { it.id }
+                        return SearchGroupState(titles = matches.take(SEARCH_GROUP_LIMIT),
+                            truncated = matches.size > SEARCH_GROUP_LIMIT)
+                    }
+                    state.copy(channels = local(ContentKind.CHANNEL),
+                        movies = local(ContentKind.MOVIE), shows = local(ContentKind.SERIES))
+                }
+                is ProviderResult.Failure -> publish { state ->
+                    val failed = SearchGroupState(message = result.message)
+                    state.copy(channels = failed, movies = failed, shows = failed)
+                }
+                else -> publish { state ->
+                    val unavailable = SearchGroupState(message = "Search is unavailable for this playlist.")
+                    state.copy(channels = unavailable, movies = unavailable, shows = unavailable)
+                }
+            }
+        }
     }
 
     fun openChannel(title: Title, expandWhenReady: Boolean = false) {
@@ -1043,17 +1095,15 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                     .background(cell, RoundedCornerShape(6.dp)).padding(16.dp))
                             val results = searchResults
                             when {
-                                results.loading -> TvInlineStatus("Searching…", loading = true)
-                                results.message != null -> TvInlineStatus(results.message.orEmpty(), loading = false)
                                 search.isBlank() -> Text("Type a title to find channels, movies and shows.", color = muted)
-                                results.isEmpty -> Text("No matches for “${search.trim()}”", color = muted)
                                 else -> {
-                                    SearchResultGroup("Channels", results.channels,
-                                        results.channelsTruncated, ::openSearchResult)
-                                    SearchResultGroup("Movies", results.movies,
-                                        results.moviesTruncated, ::openSearchResult)
-                                    SearchResultGroup("Shows", results.shows,
-                                        results.showsTruncated, ::openSearchResult)
+                                    SearchGroupResult("Channels", results.channels, ::openSearchResult)
+                                    SearchGroupResult("Movies", results.movies, ::openSearchResult)
+                                    SearchGroupResult("Shows", results.shows, ::openSearchResult)
+                                    val hasMessage = results.channels.message != null ||
+                                        results.movies.message != null || results.shows.message != null
+                                    if (results.isEmpty && !results.anyLoading && !hasMessage)
+                                        Text("No matches for “${search.trim()}”", color = muted)
                                 }
                             }
                         }
@@ -1400,6 +1450,13 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             }
         }
     }
+}
+
+@Composable
+private fun SearchGroupResult(label: String, state: SearchGroupState, onSelect: (Title) -> Unit) {
+    if (state.loading && state.titles.isEmpty()) TvInlineStatus("Searching $label…", loading = true)
+    state.message?.let { TvInlineStatus(it, loading = false) }
+    SearchResultGroup(label, state.titles, state.truncated || state.hasMore, onSelect)
 }
 
 @Composable

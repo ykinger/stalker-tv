@@ -37,6 +37,9 @@ data class Programme(
 data class Catalogue(val categories: List<Category>, val titles: List<Title>, val hasMore: Boolean = false,
     val totalItems: Int? = null)
 
+/** One bounded page of global-search results. [hasMore] lets the UI stop paging. */
+data class SearchBatch(val titles: List<Title>, val hasMore: Boolean = false)
+
 data class PlaybackSource(
     val uri: String,
     val label: String,
@@ -82,4 +85,16 @@ interface PagedContentRepository : ContentRepository {
     suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int,
         search: String, sort: String): ProviderResult<Catalogue> =
         loadPage(kind, categoryId, page)
+}
+
+/**
+ * Global search backed by a local channel index and a server-filtered VOD query.
+ * Browsing repositories that cannot answer these quickly should not implement it.
+ */
+interface SearchContentRepository : PagedContentRepository {
+    /** Case-insensitive contains over the complete persisted channel index. */
+    suspend fun searchChannels(query: String, limit: Int = 30): ProviderResult<SearchBatch>
+
+    /** Server-side VOD search. Results may mix movies and shows; callers split them. */
+    suspend fun searchVod(query: String, page: Int): ProviderResult<SearchBatch>
 }
