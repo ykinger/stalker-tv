@@ -104,6 +104,7 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 
 private val background = Color(0xFF101314)
@@ -146,12 +147,23 @@ internal fun channelsInGroup(catalogue: Catalogue, group: String?, paged: Boolea
 /** The connected experience is guide-first. */
 @Composable
 internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () -> Unit = {},
-    profileName: String = "Profile", onSwitchProfile: () -> Unit = {}) {
+    profileName: String = "Profile", sessionStatus: StateFlow<PortalSessionStatus> = idlePortalSessionStatus,
+    onSwitchProfile: () -> Unit = {}) {
     val model: CatalogueViewModel = viewModel(
         key = "connected-${System.identityHashCode(container)}",
         factory = viewModelFactory { initializer { CatalogueViewModel(container) } },
     )
     val state by model.state.collectAsStateWithLifecycle()
+    val portalSessionStatus by sessionStatus.collectAsStateWithLifecycle()
+    var recoveryBannerVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(portalSessionStatus) {
+        if (portalSessionStatus != PortalSessionStatus.Recovering) {
+            recoveryBannerVisible = false
+        } else {
+            delay(700)
+            recoveryBannerVisible = portalSessionStatus == PortalSessionStatus.Recovering
+        }
+    }
     val availableVodKinds by model.vodKinds.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val composeView = LocalView.current
@@ -1375,6 +1387,18 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             try { movieSortFocus.requestFocus() } catch (_: IllegalStateException) { }
         }
     }
+        // Shown only when re-authentication takes long enough to be noticeable.
+        AnimatedVisibility(recoveryBannerVisible) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Box(
+                    Modifier.padding(top = 24.dp)
+                        .background(accent, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                ) {
+                    Text("Reconnecting to portal…", color = Color.White, fontSize = 16.sp)
+                }
+            }
+        }
     }
 }
 

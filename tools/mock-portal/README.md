@@ -16,6 +16,8 @@ Open http://localhost:8080/health — expect `{"status":"ok","mock":true}`.
 - Laptop host: `http://localhost:8080`
 - Android emulator host: `http://10.0.2.2:8080`
 - Fake MAC: `00:1A:79:00:00:01`
+- `GET /test/expire-sessions` is a mock-only control for recovery tests; it
+  invalidates every issued token so the next API request returns HTTP 401.
 
 In the debug Android app, open Add playlist → Stalker Portal. Enter the emulator
 host above (without an API path) and the fake MAC; serial ID is optional. After confirming the playlist,

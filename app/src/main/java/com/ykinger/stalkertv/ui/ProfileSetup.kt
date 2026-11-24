@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -42,6 +43,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -187,9 +189,9 @@ internal fun endpoint(host: String): String {
 }
 
 private class PortalResponseFormatException : IllegalStateException("Portal returned non-JSON data.")
-private class PortalHttpException(val status: Int) : IllegalStateException("Portal returned HTTP $status.")
+internal class PortalHttpException(val status: Int) : IllegalStateException("Portal returned HTTP $status.")
 internal data class VerifiedPortal(val apiHost: String, val token: String, val watchdogSeconds: Int?)
-private data class PortalSession(val token: String, val watchdogSeconds: Int?)
+internal data class PortalSession(val token: String, val watchdogSeconds: Int?)
 internal data class PortalCounts(val channels: Int?, val moviesAndShows: Int?)
 
 /** Route class only: never print a playlist URL or an API query in diagnostics. */
@@ -339,11 +341,7 @@ internal fun portalRequest(profile: PortalProfile, query: String, token: String?
                         logWireChunks(requestId, "response.body", errorBody)
                     }
                 }
-                when (status) {
-                    401, 403 -> error("Device registration or session rejected.")
-                    200 -> Unit
-                    else -> throw PortalHttpException(status)
-                }
+                if (status != 200) throw PortalHttpException(status)
                 val buffer = Buffer()
                 response.body?.source()?.let { source ->
                     while (buffer.size <= 1024L * 1024 &&
@@ -426,7 +424,17 @@ internal fun portalCounts(profile: PortalProfile, verified: VerifiedPortal,
     return PortalCounts(total("itv", "genre=*"), total("vod", "category=*"))
 }
 
-private fun verifyPortal(profile: PortalProfile, container: AppContainer): PortalSession {
+/** The same authenticated profile query is used for verification and resume health checks. */
+internal fun portalProfileQuery(profile: PortalProfile): String {
+    val identity = capturedIdentity(profile)
+    if (identity != null) return capturedProfileQuery(identity, System.currentTimeMillis() / 1000)
+    val serialParam = if (profile.serial.isBlank()) "" else "&sn=${URLEncoder.encode(profile.serial, "UTF-8")}"
+    return "type=stb&action=get_profile${serialParam}" +
+        "&stb_type=MAG250&hw_version=1.7-BD-00&image_version=218&client_type=STB" +
+        "&JsHttpRequest=1-xml"
+}
+
+internal fun verifyPortal(profile: PortalProfile, container: AppContainer): PortalSession {
     fun request(query: String, token: String? = null) =
         portalRequest(profile, query, token, container) as? JSONObject ?: throw PortalResponseFormatException()
     val identity = capturedIdentity(profile)
@@ -439,13 +447,8 @@ private fun verifyPortal(profile: PortalProfile, container: AppContainer): Porta
         throw error
     }
     if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=stb.handshake.validate tokenPresent=true")
-    val serialParam = if (profile.serial.isBlank()) "" else "&sn=${URLEncoder.encode(profile.serial, "UTF-8")}"
     val profileResult = try {
-        val profileQuery = identity?.let { capturedProfileQuery(it, System.currentTimeMillis() / 1000) }
-            ?: "type=stb&action=get_profile${serialParam}" +
-                "&stb_type=MAG250&hw_version=1.7-BD-00&image_version=218&client_type=STB" +
-                "&JsHttpRequest=1-xml"
-        val profileResult = request(profileQuery, token)
+        val profileResult = request(portalProfileQuery(profile), token)
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
             "stage=stb.get_profile.validate hasId=${profileResult.has("id")} " +
                 "hasError=${profileResult.has("error")} status=${profileResult.optInt("status", -1)} " +
@@ -505,6 +508,9 @@ fun ProfileSetup() {
     var sessionToken by remember { mutableStateOf<String?>(null) }
     var sessionApiHost by remember { mutableStateOf<String?>(null) }
     var sessionWatchdogSeconds by remember { mutableStateOf<Int?>(null) }
+    // Bumped only by a manual Connect / Refresh playlist so those actions always
+    // install a new token instead of reusing the current in-memory session.
+    var sessionEpoch by remember { mutableIntStateOf(0) }
     var sessionCategoryKinds by remember { mutableStateOf<Map<String, ContentKind>>(emptyMap()) }
     var sessionVodCategories by remember { mutableStateOf<List<Category>?>(null) }
     var scanningCategories by remember { mutableStateOf(false) }
@@ -539,6 +545,13 @@ fun ProfileSetup() {
         } finally {
             scanningCategories = false
         }
+    }
+    /** Connect and Refresh playlist both replace the whole in-memory session. */
+    fun installSession(verified: VerifiedPortal) {
+        sessionApiHost = verified.apiHost
+        sessionWatchdogSeconds = verified.watchdogSeconds
+        sessionToken = verified.token
+        sessionEpoch++
     }
     fun connect(profile: PortalProfile, refreshCategoryMap: Boolean = false) {
         val viewer = activeViewer ?: return
@@ -580,9 +593,7 @@ fun ProfileSetup() {
                     sessionCategoryKinds = stored.first
                     sessionVodCategories = stored.second
                 }
-                sessionToken = verified.token
-                sessionApiHost = verified.apiHost
-                sessionWatchdogSeconds = verified.watchdogSeconds
+                installSession(verified)
                 reconnectProfile = null
                 message = "Connection successful."
                 screen = "home"
@@ -642,24 +653,42 @@ fun ProfileSetup() {
             try { firstFocus.requestFocus() } catch (_: IllegalStateException) { }
         }
     }
-    LaunchedEffect(sessionToken, sessionApiHost, sessionWatchdogSeconds) {
-        val active = selectedProfile ?: return@LaunchedEffect
-        val apiHost = sessionApiHost ?: return@LaunchedEffect
-        val token = sessionToken ?: return@LaunchedEffect
+    val connectedProfile = selectedProfile
+    val connectedToken = sessionToken
+    val activeApiHost = sessionApiHost
+    // Manual Connect / Refresh playlist bumps sessionEpoch and replaces the whole
+    // holder. Silent recovery only swaps the token inside the current holder.
+    val portalSession = remember(connectedProfile, connectedToken, activeApiHost, sessionEpoch) {
+        if (connectedProfile == null || connectedToken == null || activeApiHost == null) null else {
+            val active = connectedProfile.copy(host = activeApiHost)
+            PortalSessionHolder(
+                initialToken = connectedToken,
+                healthQuery = portalProfileQuery(active),
+                transport = { query, token -> portalRequest(active, query, token, container) },
+                refreshSession = { verifyPortal(active, container).token },
+            )
+        }
+    }
+    LaunchedEffect(portalSession, sessionWatchdogSeconds) {
+        val session = portalSession ?: return@LaunchedEffect
         val interval = sessionWatchdogSeconds ?: return@LaunchedEffect
         while (true) {
             delay(interval * 1_000L)
             try {
-                withContext(Dispatchers.IO) {
-                        portalRequest(active.copy(host = apiHost),
-                            "type=watchdog&action=get_events&cur_play_type=0&init_num=0" +
-                                "&buffering_err=0&need_quality=0&JsHttpRequest=1-xml", token, container)
-                }
-            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                withContext(Dispatchers.IO) { session.keepAlive() }
+            } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=watchdog.get_events failure=${error.javaClass.simpleName}")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG,
+                    "stage=watchdog.get_events failure=${error.javaClass.simpleName}")
             }
         }
+    }
+    // Keep-alive timers do not survive process suspension. Revalidate on resume
+    // so a returned TV does not discover an expired token on its first action.
+    LifecycleResumeEffect(portalSession) {
+        val session = portalSession
+        if (session != null) scope.launch(Dispatchers.IO) { session.healthCheck() }
+        onPauseOrDispose { }
     }
     BackHandler(screen == "landing" && !busy) {
         activeViewer = null
@@ -689,13 +718,11 @@ fun ProfileSetup() {
         if (viewer == null) emptyList()
         else playlistsForViewer(playlists, viewer.id)
     }
-    val connectedProfile = selectedProfile
-    val connectedToken = sessionToken
-    val activeApiHost = sessionApiHost
-    if (screen == "home" && connectedProfile != null && connectedToken != null && activeApiHost != null) {
-        val repository = remember(connectedProfile, connectedToken, activeApiHost, sessionCategoryKinds,
-            sessionVodCategories) {
-            StalkerContentRepository(connectedProfile.copy(host = activeApiHost), connectedToken, container,
+    if (screen == "home" && connectedProfile != null && connectedToken != null &&
+        activeApiHost != null && portalSession != null) {
+        val session = portalSession
+        val repository = remember(session, sessionCategoryKinds, sessionVodCategories) {
+            StalkerContentRepository(connectedProfile.copy(host = activeApiHost), session,
                 sessionCategoryKinds, sessionVodCategories) { categories ->
                     categoryStore.saveCategories(connectedProfile, categories)
                 }
@@ -703,6 +730,7 @@ fun ProfileSetup() {
         val container = remember(repository) { com.ykinger.stalkertv.AppContainer(repository) }
         key(homeInstance) {
             TvApp(container, profileName = viewer?.name.orEmpty(),
+                sessionStatus = session.status,
                 onProfileSettings = { screen = "settings" },
                 onSwitchProfile = {
                     selectedProfile = null
@@ -1147,9 +1175,7 @@ fun ProfileSetup() {
                             playlists = updated
                             sessionCategoryKinds = scan.kinds
                             sessionVodCategories = scan.categories
-                            sessionToken = verified.token
-                            sessionApiHost = verified.apiHost
-                            sessionWatchdogSeconds = verified.watchdogSeconds
+                            installSession(verified)
                             processedCounts = counts
                             processedName = URI(candidate.host).host ?: "Stalker Portal"
                             serial = ""; host = ""; mac = ""

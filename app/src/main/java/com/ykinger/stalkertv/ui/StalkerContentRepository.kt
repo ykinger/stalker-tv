@@ -1,7 +1,6 @@
 package com.ykinger.stalkertv.ui
 
 import android.util.Log
-import com.ykinger.stalkertv.AppContainer
 import com.ykinger.stalkertv.BuildConfig
 import com.ykinger.stalkertv.core.*
 import java.net.URI
@@ -19,8 +18,7 @@ import org.json.JSONObject
 /** Stalker transport types and command references remain inside the adapter. */
 internal class StalkerContentRepository(
     private val profile: PortalProfile,
-    private val token: String,
-    private val container: AppContainer = AppContainer(),
+    private val session: PortalSessionHolder,
     private val categoryKinds: Map<String, ContentKind> = emptyMap(),
     initialVodCategories: List<Category>? = null,
     private val onVodCategoriesLoaded: (List<Category>) -> Unit = {},
@@ -41,6 +39,9 @@ internal class StalkerContentRepository(
         withContext(Dispatchers.IO) {
             try { block() }
             catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: PortalSessionExpiredException) {
+                ProviderResult.Failure(PORTAL_SESSION_EXPIRED_MESSAGE)
+            }
             catch (error: Exception) {
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG, "stage=$stage failure=${error.javaClass.simpleName}")
                 ProviderResult.Failure("Portal request failed. Check the server or reconnect your profile.")
@@ -66,7 +67,7 @@ internal class StalkerContentRepository(
             val categoryAction = if (kind == ContentKind.CHANNEL) "get_genres" else "get_categories"
             val categories = if (page == 1) categoriesMutex.withLock {
                 categoryCache[type] ?: run {
-                    val list = portalRequest(profile, "type=$type&action=$categoryAction&JsHttpRequest=1-xml", token, container) as JSONArray
+                    val list = session.request("type=$type&action=$categoryAction&JsHttpRequest=1-xml") as JSONArray
                     (0 until list.length()).mapNotNull { index ->
                         val row = list.optJSONObject(index) ?: return@mapNotNull null
                         val id = row.optString("id").takeUnless { it.isBlank() || it == "null" } ?: return@mapNotNull null
@@ -92,8 +93,8 @@ internal class StalkerContentRepository(
                 (if (categoryId == null) "" else if (kind == ContentKind.SERIES) "&is_series=1" else "&is_series=0") +
                     (if (sort.isBlank() || categoryId == null) "" else "&sortby=$sort") +
                     (if (search.isBlank()) "" else "&search=${URLEncoder.encode(search.trim(), "UTF-8")}")
-            val response = portalRequest(profile,
-                "type=$type&action=get_ordered_list&$filter=$category&p=$page$extras&JsHttpRequest=1-xml", token, container)
+            val response = session.request(
+                "type=$type&action=get_ordered_list&$filter=$category&p=$page$extras&JsHttpRequest=1-xml")
             // Some portals return js:[] for an empty page instead of an object
             // containing data:[]. Keep the categories so users can select one.
             if (response is JSONArray && response.length() == 0) {
@@ -145,11 +146,10 @@ internal class StalkerContentRepository(
             val seriesId = reference.seriesId
             val seasonId = reference.seasonId
             val episodeId = reference.episodeId
-            val detail = portalRequest(profile,
+            val detail = session.request(
                 "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(seriesId, "UTF-8")}" +
                     "&season_id=${URLEncoder.encode(seasonId, "UTF-8")}" +
-                    "&episode_id=${URLEncoder.encode(episodeId, "UTF-8")}",
-                token, container)
+                    "&episode_id=${URLEncoder.encode(episodeId, "UTF-8")}")
             val detailCommand = movieFileLinkCommand(detail, seriesId)
             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=vod.episode_detail rows=${(detail as? JSONObject)?.optJSONArray("data")?.length() ?: -1} " +
@@ -176,9 +176,8 @@ internal class StalkerContentRepository(
             val movieId = id.removePrefix("movie:")
             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                 "stage=vod.movie_detail request=selectedMovie action=get_ordered_list")
-            val detail = portalRequest(profile,
-                "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(movieId, "UTF-8")}",
-                token, container)
+            val detail = session.request(
+                "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(movieId, "UTF-8")}")
             movieFileLinkCommand(detail, movieId).also {
                 if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
                     "stage=vod.movie_detail fileCommandFound=${it != null}")
@@ -210,7 +209,7 @@ internal class StalkerContentRepository(
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && type == "vod") Log.d(PORTAL_TAG,
             "stage=vod.create_link request=redacted source=${mediaCommandForm(command)} " +
                 "options=${if (movieLinkOptions) "movie" else "series"}")
-        val result = portalRequest(profile, query, token, container) as JSONObject
+        val result = session.request(query) as JSONObject
         val raw = result.optString("cmd")
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING && type == "vod") Log.d(PORTAL_TAG,
             "stage=vod.create_link response=redacted hasCmd=${result.has("cmd")} " +
@@ -245,9 +244,9 @@ internal class StalkerContentRepository(
             currentCoroutineContext().ensureActive()
             // The series row's cmd is a media command, not a detail URL. Stalker
             // exposes children through get_ordered_list with a parent movie_id.
-            val result = portalRequest(profile,
+            val result = session.request(
                     "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(rawId, "UTF-8")}" +
-                        "&p=$page", token, container) as? JSONObject
+                        "&p=$page") as? JSONObject
                 ?: return@safely ProviderResult.Unsupported
             val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
             for (i in 0 until rows.length()) {
@@ -270,9 +269,9 @@ internal class StalkerContentRepository(
                 return@safely ProviderResult.Empty
             val rawId = URLEncoder.encode(seriesId.removePrefix("series:"), "UTF-8")
             val rawSeason = URLEncoder.encode(seasonId, "UTF-8")
-            val result = portalRequest(profile,
+            val result = session.request(
                 "type=vod&action=get_ordered_list&movie_id=$rawId&season_id=$rawSeason" +
-                    "&p=$page", token, container) as? JSONObject
+                    "&p=$page") as? JSONObject
                 ?: return@safely ProviderResult.Unsupported
             val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
             val items = (0 until rows.length()).mapNotNull { index ->
@@ -302,12 +301,12 @@ internal class StalkerContentRepository(
         if (titles.none { it.id == channelId && it.kind == ContentKind.CHANNEL }) return@safely ProviderResult.Empty
         val encodedId = URLEncoder.encode(channelId, "UTF-8")
         val rows = try {
-            (portalRequest(profile, "type=epg&action=get_simple_data_table&ch_id=$encodedId&JsHttpRequest=1-xml", token, container) as JSONObject)
+            (session.request("type=epg&action=get_simple_data_table&ch_id=$encodedId&JsHttpRequest=1-xml") as JSONObject)
                 .getJSONArray("data")
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (_: Exception) {
             // Older panels expose the channel guide via itv instead of epg.
-            (portalRequest(profile, "type=itv&action=get_short_epg&ch_id=$encodedId&size=4", token, container) as JSONObject)
+            (session.request("type=itv&action=get_short_epg&ch_id=$encodedId&size=4") as JSONObject)
                 .getJSONArray("data")
         }
         val result = (0 until rows.length()).map { i ->

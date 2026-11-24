@@ -36,6 +36,7 @@ import com.ykinger.stalkertv.core.ContentKind
 import com.ykinger.stalkertv.core.Title
 import java.net.URI
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -46,9 +47,9 @@ private val unavailablePosters = LruCache<String, Boolean>(24)
 private val posterLocks = Array(32) { Mutex() }
 
 @Composable
-fun TvApp(container: AppContainer, profileName: String, onProfileSettings: () -> Unit,
-    onSwitchProfile: () -> Unit) {
-    ConnectedTvScreen(container, onProfileSettings, profileName, onSwitchProfile)
+internal fun TvApp(container: AppContainer, profileName: String, onProfileSettings: () -> Unit,
+    onSwitchProfile: () -> Unit, sessionStatus: StateFlow<PortalSessionStatus> = idlePortalSessionStatus) {
+    ConnectedTvScreen(container, onProfileSettings, profileName, sessionStatus, onSwitchProfile)
 }
 
 @Composable

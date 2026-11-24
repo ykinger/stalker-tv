@@ -59,8 +59,11 @@ it does not complete all of PROV-002 or prove real portal compatibility.
 - The landing/Settings screens offer playlist selection when none is selected;
   Settings also offers deselection. The last successfully connected playlist is
   remembered across restarts, including a migration default for existing installs.
-- Connecting performs a fresh handshake and profile request. Failed connections
-  show Retry / Manage playlists / offline demo; the guide is success-only.
+- Connecting performs a fresh handshake and profile request. Refresh playlist
+  also performs a fresh handshake and replaces the in-memory session, then
+  rescans VOD category classifications; Connect keeps the cached scan. Failed
+  connections show Retry / Manage playlists / offline demo; the guide is
+  success-only. See [RECOVERY-001](RECOVERY-001.md) for idle session recovery.
 - No selected playlist means no portal requests or session. Explicit deselection
   persists across restarts; tokens are never saved.
 - The guide shows provider channels from Docker (not offline demo data).

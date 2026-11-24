@@ -10,8 +10,11 @@
    See [tickets](stories/PROFILE-001.md).
 3. **Network catalogue — in verification:** select saved profile, fetch all channel pages, resolve and
     play Docker sample channels in the guide-first connected UI; retain offline demo separately.
-4. **Recovery:** expired tokens, disconnected server, malformed responses, retry,
-   edit/remove profile, and cancellation tests.
+4. **Recovery — in verification:** expired tokens now recover in place with
+   single-flight re-handshake and one retry; resume health check and live-token
+   watchdog keep idle TVs usable. Disconnected server, malformed responses,
+   edit/remove profile, and cancellation tests remain open.
+   See [RECOVERY-001](stories/RECOVERY-001.md).
 5. **MVP features:** EPG, movies, series, track controls, favourites, resume,
    catalogue search, and preferences. Extend Docker fixtures as needed.
 6. **Real-provider and physical-box validation:** authorized registration, portal

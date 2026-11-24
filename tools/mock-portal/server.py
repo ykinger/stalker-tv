@@ -108,6 +108,10 @@ def guide_for(channel_id):
 
 
 class Portal(SimpleHTTPRequestHandler):
+    # Real portals use HTTP/1.1 keep-alive. Match that so OkHttp can safely pool
+    # connections between handshake and authenticated requests.
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory="/media", **kwargs)
 
@@ -134,6 +138,11 @@ class Portal(SimpleHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == "/health":
             return self.reply({"status": "ok", "mock": True})
+        if url.path == "/test/expire-sessions":
+            # Mock-only control for expired-token recovery tests.
+            expired = len(TOKENS)
+            TOKENS.clear()
+            return self.reply({"expired": expired})
         if url.path.startswith("/posters/"):
             name = url.path.removeprefix("/posters/").removesuffix(".png")
             image = POSTER_IMAGES.get(name) if url.path == f"/posters/{name}.png" else None
@@ -241,6 +250,15 @@ class Portal(SimpleHTTPRequestHandler):
                 }], params)})
             if params["movie_id"][0] != "201":
                 return self.reply({"js": False})
+            if params.get("episode_id", ["0"])[0] not in ("", "0"):
+                # Episode detail returns a single file row, matching how real
+                # portals expose the selected episode's media file.
+                episode_id = params["episode_id"][0]
+                file_id = str(int(episode_id) + 400)
+                return self.reply({"js": page_of([{
+                    "id": file_id, "video_id": movie_id, "is_file": 1,
+                    "name": "Episode file", "cmd": f"/media/file_{file_id}.mpg",
+                }], params)})
             season_id = params.get("season_id", ["0"])[0]
             if season_id in ("0", ""):
                 selected = SEASONS
@@ -276,7 +294,7 @@ class Portal(SimpleHTTPRequestHandler):
         if kind == "vod" and action == "create_link":
             cmd = params.get("cmd", [""])[0]
             if cmd not in ({row["cmd"] for row in MOVIES + EPISODES} |
-                           {f"/media/file_{int(row['id']) + 400}.mpg" for row in MOVIES}):
+                           {f"/media/file_{int(row['id']) + 400}.mpg" for row in MOVIES + EPISODES}):
                 return self.reply({"js": {"error": "Unknown video"}}, 400)
             return self.reply({"js": {"cmd": f"ffmpeg {PUBLIC_BASE_URL}/sample.mp4"}})
         return self.reply({"js": {"error": "Unsupported mock action"}}, 400)
