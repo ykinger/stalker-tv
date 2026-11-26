@@ -701,6 +701,36 @@ class PortalClientTest {
         } finally { server.shutdown() }
     }
 
+    @Test fun firstEpisodeUsesItsOwnCommandInsteadOfShowOrLastEpisode() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"js":[{"id":"*","title":"All"}]}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"201","name":"Show","is_series":1}],"total_items":1}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[{"id":"301","name":"Season 1","is_season":true}],"total_items":1}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"data":[
+                {"id":"402","episode_number":2,"name":"Last","cmd":"episode-two"},
+                {"id":"401","episode_number":1,"name":"First","cmd":"episode-one"}],"total_items":2}}"""))
+            server.enqueue(MockResponse().setBody("""{"js":{"cmd":"http://example.test/first.m3u8"}}"""))
+            val profile = PortalProfile("", server.url("/server/load.php").toString(),
+                "00:1A:79:00:00:01")
+            val repository = StalkerContentRepository(profile, session(profile, "demo-token"))
+            val show = (repository.loadPage(ContentKind.SERIES, null, 1)
+                as ProviderResult.Success).value.titles.single()
+            val season = (repository.seasons(show.id) as ProviderResult.Success).value.single()
+            val first = (repository.episodes(show.id, season.id, 1)
+                as ProviderResult.Success).value.episodes.first()
+            assertEquals("episode:401", first.id)
+            assertEquals("http://example.test/first.m3u8",
+                (repository.resolve(first.id) as ProviderResult.Success).value.uri)
+            repeat(4) { server.takeRequest() }
+            val link = server.takeRequest().requestUrl!!
+            assertEquals("episode-one", link.queryParameter("cmd"))
+            assertEquals("1", link.queryParameter("series"))
+            assertEquals(5, server.requestCount)
+        } finally { server.shutdown() }
+    }
+
     @Test fun unsupportedSeriesResponseDoesNotBecomeAConnectionError() = runBlocking {
         val server = MockWebServer()
         server.start()

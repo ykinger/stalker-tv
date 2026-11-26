@@ -186,6 +186,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     val composeView = LocalView.current
     val keyboardController = LocalSoftwareKeyboardController.current
     var selectedId by remember { mutableStateOf<String?>(null) }
+    var playingId by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf<PlaybackSource?>(null) }
     var resolving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -266,6 +267,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         focusSelectedVodCategory = false
         source = null
         selectedId = null
+        playingId = null
         area = if (item == "TV" || item == "Movies" || item == "Shows") "groups" else "content"
         when (item) {
             "TV", "Search" -> model.loadSection(ContentKind.CHANNEL)
@@ -382,6 +384,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
 
     fun openChannel(title: Title, expandWhenReady: Boolean = false) {
+        if (fullScreen && resolving) return
         expandChannelId = title.id.takeIf { expandWhenReady }
         if (selectedId == title.id) {
             if (source != null) {
@@ -394,23 +397,30 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         }
         pendingChannelFocus = title.id
         selectedId = title.id
-        source = null
+        if (!fullScreen) source = null
         error = null
         resolving = true
         scope.launch {
             when (val result = model.repository.resolve(title.id)) {
                 is ProviderResult.Success -> if (selectedId == title.id) {
                     source = result.value
+                    playingId = title.id
                     if (expandChannelId == title.id) {
                         expandChannelId = null
                         previewRequested = false
                         fullScreen = true
                     }
                 }
-                is ProviderResult.Failure -> if (selectedId == title.id) error = result.message
-                else -> if (selectedId == title.id) error = "This channel is unavailable."
+                is ProviderResult.Failure -> if (selectedId == title.id) {
+                    error = result.message
+                    if (fullScreen) selectedId = playingId
+                }
+                else -> if (selectedId == title.id) {
+                    error = "This channel is unavailable."
+                    if (fullScreen) selectedId = playingId
+                }
             }
-            if (selectedId == title.id) resolving = false
+            if (selectedId == title.id || (fullScreen && selectedId == playingId)) resolving = false
             if (expandChannelId == title.id && source == null) expandChannelId = null
         }
     }
@@ -444,20 +454,132 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
 
     fun playVod(title: Title) {
+        if (fullScreen && resolving) return
         selectedId = title.id
-        source = null
+        if (!fullScreen) source = null
         error = null
         resolving = true
         scope.launch {
             when (val result = model.repository.resolve(title.id)) {
                 is ProviderResult.Success -> if (selectedId == title.id) {
                     source = result.value
+                    playingId = title.id
                     fullScreen = true
                 }
-                is ProviderResult.Failure -> if (selectedId == title.id) error = result.message
-                else -> if (selectedId == title.id) error = "This video is unavailable."
+                is ProviderResult.Failure -> if (selectedId == title.id) {
+                    error = result.message
+                    if (fullScreen) selectedId = playingId
+                }
+                else -> if (selectedId == title.id) {
+                    error = "This video is unavailable."
+                    if (fullScreen) selectedId = playingId
+                }
             }
-            if (selectedId == title.id) resolving = false
+            if (selectedId == title.id || (fullScreen && selectedId == playingId)) resolving = false
+        }
+    }
+
+    fun orderedEpisodes(episodes: List<Title>): List<Title> {
+        val order = model.repository as? EpisodeOrderSource ?: return episodes
+        return episodes.sortedWith(compareBy { order.episodeNumber(it.id) ?: Int.MAX_VALUE })
+    }
+
+    suspend fun fetchEpisodePage(show: Title, season: Season, next: Int): Boolean {
+        val current = seasonEpisodes[season.id] ?: SeasonEpisodeState()
+        if (current.loading) return false
+        seasonEpisodes[season.id] = current.copy(loading = true, error = null)
+        val result = model.repository.episodes(show.id, season.id, next)
+        if (vodTitle?.id != show.id) return false
+        seasonEpisodes[season.id] = if (result is ProviderResult.Success)
+            current.copy(episodes = orderedEpisodes((current.episodes + result.value.episodes).distinctBy { it.id }),
+                page = next, hasMore = result.value.hasMore, loading = false)
+        else current.copy(loading = false, error = "Could not load episodes for this season. Try again.")
+        return result is ProviderResult.Success
+    }
+
+    fun playFirstEpisode() {
+        val show = vodTitle ?: return
+        val season = seasons.firstOrNull() ?: return
+        if (resolving) return
+        resolving = true
+        scope.launch {
+            var page = seasonEpisodes[season.id] ?: SeasonEpisodeState()
+            var failed = false
+            val order = model.repository as? EpisodeOrderSource
+            while (page.hasMore && order?.episodeNumber(page.episodes.firstOrNull()?.id.orEmpty()) != 1) {
+                if (!fetchEpisodePage(show, season, page.page + 1)) {
+                    failed = true
+                    break
+                }
+                page = seasonEpisodes[season.id] ?: break
+            }
+            if (vodTitle?.id == show.id) {
+                resolving = false
+                // If a later page failed, do not claim page one's first row is E1.
+                if (failed) {
+                    error = "Could not verify the first episode. Retry loading the season."
+                } else page.episodes.firstOrNull()?.let { playVod(it) }
+            }
+        }
+    }
+
+    fun changeEpisode(direction: Int) {
+        if (resolving) return
+        val show = vodTitle ?: return
+        val currentId = playingId ?: return
+        scope.launch {
+            for ((seasonIndex, season) in seasons.withIndex()) {
+                var page = seasonEpisodes[season.id] ?: continue
+                var index = page.episodes.indexOfFirst { it.id == currentId }
+                if (index < 0) continue
+                if (direction > 0) {
+                    if (index + 1 < page.episodes.size) {
+                        playVod(page.episodes[index + 1])
+                        return@launch
+                    }
+                    while (page.hasMore) {
+                        if (!fetchEpisodePage(show, season, page.page + 1)) return@launch
+                        page = seasonEpisodes[season.id] ?: return@launch
+                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
+                        index = page.episodes.indexOfFirst { it.id == currentId }
+                        if (index + 1 < page.episodes.size) {
+                            playVod(page.episodes[index + 1])
+                            return@launch
+                        }
+                    }
+                    for (nextSeason in seasons.drop(seasonIndex + 1)) {
+                        if (seasonEpisodes[nextSeason.id] == null &&
+                            !fetchEpisodePage(show, nextSeason, 1)) return@launch
+                        val next = seasonEpisodes[nextSeason.id]?.episodes?.firstOrNull()
+                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
+                        if (next != null) { playVod(next); return@launch }
+                    }
+                } else {
+                    var previous = page.episodes.getOrNull(index - 1)
+                    while (previous == null && page.hasMore &&
+                        (model.repository as? EpisodeOrderSource)?.episodeNumber(currentId) != 1) {
+                        if (!fetchEpisodePage(show, season, page.page + 1)) return@launch
+                        page = seasonEpisodes[season.id] ?: return@launch
+                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
+                        index = page.episodes.indexOfFirst { it.id == currentId }
+                        previous = page.episodes.getOrNull(index - 1)
+                    }
+                    if (previous == null) for (earlier in seasons.take(seasonIndex).asReversed()) {
+                        if (seasonEpisodes[earlier.id] == null &&
+                            !fetchEpisodePage(show, earlier, 1)) return@launch
+                        var earlierPage = seasonEpisodes[earlier.id] ?: return@launch
+                        while (earlierPage.hasMore) {
+                            if (!fetchEpisodePage(show, earlier, earlierPage.page + 1)) return@launch
+                            earlierPage = seasonEpisodes[earlier.id] ?: return@launch
+                        }
+                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
+                        previous = earlierPage.episodes.lastOrNull()
+                        if (previous != null) break
+                    }
+                    if (previous != null) playVod(previous)
+                }
+                return@launch
+            }
         }
     }
 
@@ -492,6 +614,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         previewRequested = false
         expandChannelId = null
         selectedId = null; source = null; error = null
+        playingId = null
         model.loadSection(ContentKind.CHANNEL, category)
     }
 
@@ -537,7 +660,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             val latest = seasonEpisodes[season.id] ?: return@launch
             seasonEpisodes[season.id] = when (result) {
                 is ProviderResult.Success -> {
-                    latest.copy(episodes = (latest.episodes + result.value.episodes).distinctBy { it.id },
+                    val order = model.repository as? EpisodeOrderSource
+                    val episodes = (latest.episodes + result.value.episodes).distinctBy { it.id }
+                        .sortedWith(compareBy { order?.episodeNumber(it.id) ?: Int.MAX_VALUE })
+                    latest.copy(episodes = episodes,
                         page = next, hasMore = result.value.hasMore, loading = false)
                 }
                 else -> latest.copy(loading = false,
@@ -611,6 +737,11 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             withFrameNanos { }
             composeView.requestFocus()
             try { (focusedRowFocus ?: guideFocus).requestFocus() } catch (_: IllegalStateException) { }
+        } else if (!fullScreen && vodTitle != null && area == "content") {
+            withFrameNanos { }
+            withFrameNanos { }
+            composeView.requestFocus()
+            try { guideFocus.requestFocus() } catch (_: IllegalStateException) { }
         }
     }
 
@@ -635,7 +766,30 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
 
     if (fullScreen && source != null) {
-        SamplePlayer(source!!, live = section == "TV") { fullScreen = false }
+        val loadedChannels = (state as? LoadState.Ready<Catalogue>)?.value
+            ?.let { channelsInGroup(it, group, model.repository is PagedContentRepository) }.orEmpty()
+        val indexedChannels = remember(model.repository, group) {
+            (model.repository as? ChannelNavigationSource)?.navigationChannels(group).orEmpty()
+        }
+        val channels = indexedChannels.ifEmpty { loadedChannels }
+        val channelIndex = channels.indexOfFirst { it.id == playingId }
+        SamplePlayer(source!!, live = section == "TV",
+            onChannelUp = { if (channelIndex >= 0)
+                channels.getOrNull(channelIndex + 1)?.let { openChannel(it, expandWhenReady = true) } },
+            onChannelDown = { if (channelIndex >= 0)
+                channels.getOrNull(channelIndex - 1)?.let { openChannel(it, expandWhenReady = true) } },
+            onNextEpisode = { changeEpisode(1) },
+            onPreviousEpisode = { changeEpisode(-1) },
+            episode = section == "Shows" && playingId?.startsWith("episode:") == true,
+            status = if (resolving) "Loading…" else error,
+            onBack = {
+                if (resolving) {
+                    selectedId = playingId
+                    resolving = false
+                    expandChannelId = null
+                }
+                fullScreen = false
+            })
         return
     }
     val vodBrowsing = vodKind != null && area == "content"
@@ -1073,7 +1227,9 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     "Settings" -> {
                         GuideAction("Playlists", modifier = Modifier.focusRequester(guideFocus), onClick = onManagePlaylists)
                         GuideAction("Refresh channels", onClick = {
-                            section = "TV"; group = null; model.loadSection(ContentKind.CHANNEL, force = true)
+                            section = "TV"; group = null; area = "guide"
+                            selectedId = null; source = null; playingId = null
+                            model.loadSection(ContentKind.CHANNEL, force = true)
                         })
                     }
                     "Search" -> {
@@ -1187,7 +1343,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                                 modifier = Modifier.width(220.dp).focusRequester(guideFocus)
                                                     .focusProperties { up = heroFocus }
                                                     .onFocusChanged { if (it.isFocused) focusedEpisodeIndex = -1 }) {
-                                                playVod(firstEpisode)
+                                                playFirstEpisode()
                                             }
                                         }
                                     }

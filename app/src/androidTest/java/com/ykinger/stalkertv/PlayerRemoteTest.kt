@@ -14,6 +14,7 @@ import com.ykinger.stalkertv.core.PlaybackSource
 import com.ykinger.stalkertv.ui.SamplePlayer
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -214,6 +215,83 @@ class PlayerRemoteTest {
             var hidden = false
             remote.runOnMainSync { hidden = !view.isControllerFullyVisible }
             hidden
+        }
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    @Test fun hiddenLiveControlsUseUpAndDownToChangeChannels() {
+        var up = 0
+        var down = 0
+        compose.activity.runOnUiThread {
+            compose.activity.setContent {
+                SamplePlayer(PlaybackSource("asset:///big_buck_bunny_sample.mp4", "Live"),
+                    live = true, onChannelUp = { up++ }, onChannelDown = { down++ }) {}
+            }
+        }
+        val remote = InstrumentationRegistry.getInstrumentation()
+        lateinit var view: PlayerView
+        compose.waitUntil(30_000) {
+            var ready = false
+            remote.runOnMainSync {
+                compose.activity.findViewById<PlayerView>(R.id.sample_player)?.let {
+                    if (it.player?.playbackState == Player.STATE_READY) { view = it; ready = true }
+                }
+            }
+            ready
+        }
+        remote.runOnMainSync { view.hideController(); view.requestFocus() }
+        remote.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_UP)
+        remote.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
+        remote.runOnMainSync {
+            assertEquals(1, up)
+            assertEquals(1, down)
+            assertFalse(view.isControllerFullyVisible)
+        }
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    @Test fun episodeButtonsAdvanceAndRestartBeforePrevious() {
+        var next = 0
+        var previous = 0
+        compose.activity.runOnUiThread {
+            compose.activity.setContent {
+                SamplePlayer(PlaybackSource("asset:///big_buck_bunny_sample.mp4", "Episode"),
+                    episode = true, onNextEpisode = { next++ },
+                    onPreviousEpisode = { previous++ }) {}
+            }
+        }
+        val remote = InstrumentationRegistry.getInstrumentation()
+        lateinit var view: PlayerView
+        compose.waitUntil(30_000) {
+            var ready = false
+            remote.runOnMainSync {
+                compose.activity.findViewById<PlayerView>(R.id.sample_player)?.let {
+                    if (it.player?.playbackState == Player.STATE_READY) { view = it; ready = true }
+                }
+            }
+            ready
+        }
+        remote.runOnMainSync {
+            view.player!!.pause()
+            view.player!!.seekTo(12_000)
+            view.showController()
+        }
+        compose.waitUntil(5_000) {
+            var enabled = false
+            remote.runOnMainSync {
+                enabled = view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_prev).isEnabled &&
+                    view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next).isEnabled
+            }
+            enabled
+        }
+        remote.runOnMainSync {
+            view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next).performClick()
+            view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_prev).performClick()
+            assertEquals(1, next)
+            assertEquals(0, previous)
+            assertTrue(view.player!!.currentPosition < 1_000)
+            view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_prev).performClick()
+            assertEquals(1, previous)
         }
     }
 }

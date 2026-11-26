@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -36,7 +37,10 @@ import com.ykinger.stalkertv.core.PlaybackSource
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-fun SamplePlayer(source: PlaybackSource, live: Boolean = false, onBack: () -> Unit) {
+fun SamplePlayer(source: PlaybackSource, live: Boolean = false,
+    onChannelUp: () -> Unit = {}, onChannelDown: () -> Unit = {},
+    onNextEpisode: () -> Unit = {}, onPreviousEpisode: () -> Unit = {},
+    episode: Boolean = false, status: String? = null, onBack: () -> Unit) {
     val context = LocalContext.current
     var error by remember(source) { mutableStateOf(false) }
     var resumePlayback by remember(source) { mutableStateOf(true) }
@@ -115,8 +119,9 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false, onBack: () -> Un
                 Button(onClick = onBack) { Text("Back") }
             }
         } else {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
             AndroidView(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 factory = { viewContext ->
                     RemotePlayerView(viewContext, live).apply {
                         id = R.id.sample_player
@@ -125,7 +130,12 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false, onBack: () -> Un
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
-                        this.player = player
+                        bindPlayer(player)
+                        channelUp = onChannelUp
+                        channelDown = onChannelDown
+                        nextEpisode = onNextEpisode
+                        previousEpisode = onPreviousEpisode
+                        episodeControls = episode
                         useController = true
                         controllerAutoShow = !live
                         if (live) setControllerShowTimeoutMs(3_000)
@@ -139,9 +149,19 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false, onBack: () -> Un
                         }
                     }
                 },
-                update = { it.player = player },
-                onRelease = { it.player = null },
+                update = {
+                    it.bindPlayer(player)
+                    it.channelUp = onChannelUp
+                    it.channelDown = onChannelDown
+                    it.nextEpisode = onNextEpisode
+                    it.previousEpisode = onPreviousEpisode
+                    it.episodeControls = episode
+                },
+                onRelease = { it.clearPlayer() },
             )
+            if (status != null) Text(status, modifier = Modifier.align(Alignment.TopCenter)
+                .background(Color.Black.copy(alpha = 0.8f)).padding(12.dp))
+            }
         }
     }
 }
@@ -149,6 +169,42 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false, onBack: () -> Un
 /** TV remote shortcuts on the focused player surface. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 private class RemotePlayerView(context: Context, private val live: Boolean) : PlayerView(context) {
+    var channelUp: () -> Unit = {}
+    var channelDown: () -> Unit = {}
+    var nextEpisode: () -> Unit = {}
+    var previousEpisode: () -> Unit = {}
+    var episodeControls: Boolean = false
+    var restartedEpisode = false
+    private val episodeButtonListener = object : Player.Listener {
+        override fun onEvents(player: Player, events: Player.Events) {
+            post { enableEpisodeButtons() }
+        }
+    }
+
+    fun bindPlayer(playback: Player) {
+        if (player === playback) return
+        if (isAttachedToWindow) player?.removeListener(episodeButtonListener)
+        restartedEpisode = false
+        player = playback
+        if (isAttachedToWindow) playback.addListener(episodeButtonListener)
+    }
+
+    fun clearPlayer() {
+        if (isAttachedToWindow) player?.removeListener(episodeButtonListener)
+        player = null
+    }
+
+    private fun enableEpisodeButtons() {
+        if (!episodeControls || !isControllerFullyVisible) return
+        findViewById<View>(androidx.media3.ui.R.id.exo_prev)?.apply {
+            isEnabled = true
+            isFocusable = true
+        }
+        findViewById<View>(androidx.media3.ui.R.id.exo_next)?.apply {
+            isEnabled = true
+            isFocusable = true
+        }
+    }
     private val focusLogger = ViewTreeObserver.OnGlobalFocusChangeListener { old, new ->
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
             "stage=playback.remote focus=${focusTarget(old)}->${focusTarget(new)}")
@@ -156,6 +212,7 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        player?.addListener(episodeButtonListener)
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) viewTreeObserver.addOnGlobalFocusChangeListener(focusLogger)
         if (live) {
             setShowRewindButton(false)
@@ -172,9 +229,27 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
             }
             findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)
                 ?.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-        } else findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
-            isFocusable = true
-            setKeyTimeIncrement(10_000L)
+        } else {
+            setShowPreviousButton(episodeControls)
+            setShowNextButton(episodeControls)
+            findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
+                isFocusable = true
+                setKeyTimeIncrement(10_000L)
+            }
+            if (episodeControls) {
+                findViewById<View>(androidx.media3.ui.R.id.exo_next)?.setOnClickListener { nextEpisode() }
+                findViewById<View>(androidx.media3.ui.R.id.exo_prev)?.setOnClickListener {
+                    val playback = player
+                    if (!restartedEpisode) {
+                        playback?.seekTo(0)
+                        restartedEpisode = true
+                    } else {
+                        restartedEpisode = false
+                        previousEpisode()
+                    }
+                }
+            }
+            post { enableEpisodeButtons() }
         }
         if (isControllerFullyVisible) {
             findViewById<View>(if (live) androidx.media3.ui.R.id.exo_settings
@@ -185,6 +260,7 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
     }
 
     override fun onDetachedFromWindow() {
+        player?.removeListener(episodeButtonListener)
         if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) viewTreeObserver.removeOnGlobalFocusChangeListener(focusLogger)
         super.onDetachedFromWindow()
     }
@@ -197,6 +273,7 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
                     "focus=${focusTarget(findFocus())}")
             if (isAttachedToWindow) {
                 if (visible) {
+                    post { enableEpisodeButtons() }
                     // Focus Play/Pause before the newly visible controller is drawn.
                     findViewById<View>(if (live) androidx.media3.ui.R.id.exo_settings
                         else androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
@@ -236,6 +313,12 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
                 // pass seek keys from the settings icon to the player surface.
                 if (seek && findFocus() === settings) return true
                 return super.dispatchKeyEvent(event)
+            }
+            if (!isControllerFullyVisible && reveal) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    if (key == KeyEvent.KEYCODE_DPAD_UP) channelUp() else channelDown()
+                }
+                return true
             }
             if (event.action == KeyEvent.ACTION_DOWN) {
                 showController()

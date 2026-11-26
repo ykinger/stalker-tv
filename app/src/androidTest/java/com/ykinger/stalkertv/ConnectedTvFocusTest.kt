@@ -532,6 +532,44 @@ class ConnectedTvFocusTest {
         compose.onNodeWithText("A Show").assertIsDisplayed()
     }
 
+    @Test fun playFirstEpisodeChecksLaterPagesBeforeResolving() {
+        val show = Title("series:1", "A Show", ContentKind.SERIES, "drama")
+        val resolved = mutableListOf<String>()
+        val repository = object : ContentRepository, com.ykinger.stalkertv.ui.EpisodeOrderSource {
+            override fun episodeNumber(id: String): Int? = when (id) {
+                "episode:1" -> 1
+                "episode:2" -> 2
+                else -> null
+            }
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(
+                listOf(Category("drama", "Drama")), listOf(show)))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String) = ProviderResult.Success(
+                listOf(Season("season:1", show.id, 1, emptyList())))
+            override suspend fun episodes(seriesId: String, seasonId: String, page: Int) =
+                ProviderResult.Success(EpisodePage(listOf(
+                    Title("episode:${3 - page}", "Episode ${3 - page}", ContentKind.EPISODE, seasonId)),
+                    hasMore = page == 1))
+            override suspend fun programmes(channelId: String) = ProviderResult.Empty
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> {
+                resolved += id
+                return ProviderResult.Success(PlaybackSource("asset:///big_buck_bunny_sample.mp4", id))
+            }
+        }
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.onNode(hasContentDescription("Shows") and hasClickAction()).performClick()
+        compose.onNode(hasText("Drama") and hasClickAction()).performClick()
+        compose.onNodeWithContentDescription("A Show").performClick()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Play S1 E1").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Play S1 E1").performClick()
+        compose.waitUntil(5_000) { resolved.isNotEmpty() }
+        org.junit.Assert.assertEquals(listOf("episode:1"), resolved)
+    }
+
     @OptIn(ExperimentalTestApi::class)
     @Test fun leftFromLaterEpisodeStepsBackBeforeOpeningTheMenu() {
         val show = Title("series:1", "A Show", ContentKind.SERIES, "drama")

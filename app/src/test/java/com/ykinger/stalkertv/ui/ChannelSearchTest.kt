@@ -112,6 +112,8 @@ class ChannelSearchTest {
         val channels = repository.searchChannels("cnn") as ProviderResult.Success
         assertEquals(listOf("1"), channels.value.titles.map { it.id })
         assertFalse(channels.value.hasMore)
+        assertEquals(listOf("1", "2"), repository.navigationChannels(null).map { it.id })
+        assertEquals(listOf("2"), repository.navigationChannels("20").map { it.id })
 
         val vod = repository.searchVod("the", 1) as ProviderResult.Success
         assertEquals(listOf("movie:101"), vod.value.titles.filter { it.kind == ContentKind.MOVIE }.map { it.id })

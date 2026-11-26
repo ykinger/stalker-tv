@@ -17,6 +17,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Stalker transport types and command references remain inside the adapter. */
+internal interface ChannelNavigationSource {
+    fun navigationChannels(categoryId: String?): List<Title>
+}
+
+internal interface EpisodeOrderSource {
+    fun episodeNumber(id: String): Int?
+}
+
 internal class StalkerContentRepository(
     private val profile: PortalProfile,
     private val session: PortalSessionHolder,
@@ -24,15 +32,20 @@ internal class StalkerContentRepository(
     initialVodCategories: List<Category>? = null,
     private val onVodCategoriesLoaded: (List<Category>) -> Unit = {},
     initialChannelIndex: List<ChannelIndexEntry>? = null,
-) : PagedContentRepository, VodCategoryKindSource, SearchContentRepository {
+) : PagedContentRepository, VodCategoryKindSource, SearchContentRepository,
+    ChannelNavigationSource, EpisodeOrderSource {
     private data class EpisodeReference(val seriesId: String, val seasonId: String,
-        val episodeId: String, val seriesNumber: String?)
+        val episodeId: String, val seriesNumber: String?, val command: String?, val number: Int?)
     override fun categoryKind(categoryId: String): ContentKind? = categoryKinds[categoryId]
 
     private var titles = emptyList<Title>()
     private var commands = emptyMap<String, String>()
     private var episodeParents = emptyMap<String, EpisodeReference>()
     private val channelIndex: List<ChannelIndexEntry> = initialChannelIndex.orEmpty()
+    override fun navigationChannels(categoryId: String?): List<Title> =
+        channelIndex.asSequence().filter { categoryId == null || it.categoryId == categoryId }
+            .map { it.toTitle() }.toList()
+    override fun episodeNumber(id: String): Int? = episodeParents[id]?.number
     private val searchableChannels: List<Pair<ChannelIndexEntry, String>> =
         initialChannelIndex?.map { it to it.name.lowercase(Locale.ROOT) }.orEmpty()
 
@@ -217,32 +230,36 @@ internal class StalkerContentRepository(
 
     override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = safely("playback.resolve") {
         val episodeReference = episodeParents[id]
-        // Episode-list rows may all carry the same show-level command. Always
-        // resolve the selected episode through its episode-filtered detail page.
+        // A distinct episode command is safest; shared commands require the
+        // selected episode's filtered detail page instead.
         val catalogueCommand = if (id.startsWith("episode:")) {
             val reference = episodeReference ?: return@safely ProviderResult.Empty
-            val seriesId = reference.seriesId
-            val seasonId = reference.seasonId
-            val episodeId = reference.episodeId
-            val detail = session.request(
-                "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(seriesId, "UTF-8")}" +
-                    "&season_id=${URLEncoder.encode(seasonId, "UTF-8")}" +
-                    "&episode_id=${URLEncoder.encode(episodeId, "UTF-8")}")
-            val detailCommand = movieFileLinkCommand(detail, seriesId)
-            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
-                "stage=vod.episode_detail rows=${(detail as? JSONObject)?.optJSONArray("data")?.length() ?: -1} " +
-                    "commandFound=${detailCommand != null}")
-            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) (detail as? JSONObject)?.optJSONArray("data")?.let { rows ->
-                for (index in 0 until minOf(rows.length(), 3)) {
-                    val row = rows.optJSONObject(index) ?: continue
-                    Log.d(PORTAL_TAG, "stage=vod.episode_detail row=$index " +
-                        "idNumeric=${row.optString("id").matches(Regex("[0-9]{1,20}"))} " +
-                        "isFile=${row.optInt("is_file") == 1 || row.optBoolean("is_file")} " +
-                        "videoMatchesSeries=${row.optString("video_id") == seriesId} " +
-                        "hasPath=${row.has("path")} hasCmd=${row.has("cmd")}")
+            if (reference.command != null) {
+                reference.command
+            } else {
+                val seriesId = reference.seriesId
+                val seasonId = reference.seasonId
+                val episodeId = reference.episodeId
+                val detail = session.request(
+                    "type=vod&action=get_ordered_list&movie_id=${URLEncoder.encode(seriesId, "UTF-8")}" +
+                        "&season_id=${URLEncoder.encode(seasonId, "UTF-8")}" +
+                        "&episode_id=${URLEncoder.encode(episodeId, "UTF-8")}")
+                val detailCommand = movieFileLinkCommand(detail, seriesId)
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,
+                    "stage=vod.episode_detail rows=${(detail as? JSONObject)?.optJSONArray("data")?.length() ?: -1} " +
+                        "commandFound=${detailCommand != null}")
+                if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) (detail as? JSONObject)?.optJSONArray("data")?.let { rows ->
+                    for (index in 0 until minOf(rows.length(), 3)) {
+                        val row = rows.optJSONObject(index) ?: continue
+                        Log.d(PORTAL_TAG, "stage=vod.episode_detail row=$index " +
+                            "idNumeric=${row.optString("id").matches(Regex("[0-9]{1,20}"))} " +
+                            "isFile=${row.optInt("is_file") == 1 || row.optBoolean("is_file")} " +
+                            "videoMatchesSeries=${row.optString("video_id") == seriesId} " +
+                            "hasPath=${row.has("path")} hasCmd=${row.has("cmd")}")
+                    }
                 }
+                detailCommand
             }
-            detailCommand
         } else commands[id]
         val availableCommand = catalogueCommand ?: run {
             if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG, "stage=playback.resolve source=missing")
@@ -344,7 +361,7 @@ internal class StalkerContentRepository(
             if (rows.length() == 0 || (total >= 0 && page.toLong() * size >= total) ||
                 (total < 0 && rows.length() < size)) break
         }
-        if (seasons.isEmpty()) ProviderResult.Empty else ProviderResult.Success(seasons)
+        if (seasons.isEmpty()) ProviderResult.Empty else ProviderResult.Success(seasons.sortedBy { it.number })
     }
 
     override suspend fun episodes(seriesId: String, seasonId: String, page: Int): ProviderResult<EpisodePage> =
@@ -358,19 +375,29 @@ internal class StalkerContentRepository(
                     "&p=$page") as? JSONObject
                 ?: return@safely ProviderResult.Unsupported
             val rows = result.optJSONArray("data") ?: return@safely ProviderResult.Unsupported
-            val items = (0 until rows.length()).mapNotNull { index ->
-                val row = rows.optJSONObject(index) ?: return@mapNotNull null
-                val rawEpisode = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val orderedRows = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
+                .sortedWith(compareBy { row ->
+                    row.optInt("episode_number", row.optInt("series_number", Int.MAX_VALUE))
+                })
+            val items = orderedRows.mapIndexedNotNull { index, row ->
+                val rawEpisode = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapIndexedNotNull null
                 val id = "episode:$rawEpisode"
-                val seriesNumber = row.optString("series_number")
+                val seriesNumber = row.optString("series_number").ifBlank {
+                    row.optString("episode_number")
+                }
                     .takeIf { it.matches(Regex("[0-9]{1,6}")) && it != "0" }
+                val command = row.optString("cmd").takeIf { it.isNotBlank() && it != "null" }
+                    ?.takeIf { candidate ->
+                        (0 until rows.length()).count { rows.optJSONObject(it)?.optString("cmd") == candidate } == 1
+                    }
                 episodeParents = episodeParents + (id to EpisodeReference(
-                    seriesId.removePrefix("series:"), seasonId, rawEpisode, seriesNumber))
+                    seriesId.removePrefix("series:"), seasonId, rawEpisode, seriesNumber, command,
+                    row.optInt("episode_number", row.optInt("series_number", 0)).takeIf { it > 0 }))
                 val artwork = listOf("pic", "screenshot_uri").firstNotNullOfOrNull { field ->
                     row.optString(field).takeUnless { it.isBlank() || it in setOf("null", "0", "false") }
                         ?.let { posterAddress(profile.host, it) }
                 }
-                Title(id, row.optString("name").ifBlank { "Episode ${row.optInt("series_number", index + 1)}" },
+                Title(id, row.optString("name").ifBlank { "Episode ${row.optInt("episode_number", index + 1)}" },
                     ContentKind.EPISODE, seasonId, artworkKey = artwork)
             }
             rememberTitles(items)
