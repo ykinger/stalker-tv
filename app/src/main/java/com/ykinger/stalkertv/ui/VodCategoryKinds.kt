@@ -66,17 +66,25 @@ internal suspend fun scanVodCategoryKinds(profile: PortalProfile, verified: Veri
     val result = mutableMapOf<String, ContentKind>()
     for ((index, categoryId) in categoryIds.withIndex()) {
         currentCoroutineContext().ensureActive()
-        val rows = withContext(Dispatchers.IO) {
-            val response = portalRequest(apiProfile,
-                "type=vod&action=get_ordered_list&category=${URLEncoder.encode(categoryId, "UTF-8")}" +
-                    "&genre=0&sortby=&p=1&JsHttpRequest=1-xml", verified.token, container)
-            when (response) {
-                is JSONObject -> response.optJSONArray("data")
-                is JSONArray -> response
-                else -> null
+        try {
+            val rows = withContext(Dispatchers.IO) {
+                val response = portalRequest(apiProfile,
+                    "type=vod&action=get_ordered_list&category=${URLEncoder.encode(categoryId, "UTF-8")}" +
+                        "&genre=0&sortby=&p=1&JsHttpRequest=1-xml", verified.token, container)
+                when (response) {
+                    is JSONObject -> response.optJSONArray("data")
+                    is JSONArray -> response
+                    else -> null
+                }
             }
+            classifyVodCategory(rows)?.let { result[categoryId] = it }
+        } catch (error: PortalResponseFormatException) {
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG,
+                "stage=vod.category_scan category=$index failure=${error.javaClass.simpleName}")
+        } catch (error: PortalHttpException) {
+            if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.w(PORTAL_TAG,
+                "stage=vod.category_scan category=$index failure=${error.javaClass.simpleName} status=${error.status}")
         }
-        classifyVodCategory(rows)?.let { result[categoryId] = it }
         onProgress(index + 1, categoryIds.size)
     }
     if (BuildConfig.DEBUG && DIAGNOSTIC_LOGGING) Log.d(PORTAL_TAG,

@@ -190,7 +190,7 @@ internal fun endpoint(host: String): String {
     return uri.toString()
 }
 
-private class PortalResponseFormatException : IllegalStateException("Portal returned non-JSON data.")
+internal class PortalResponseFormatException : IllegalStateException("Portal returned non-JSON data.")
 internal class PortalHttpException(val status: Int) : IllegalStateException("Portal returned HTTP $status.")
 internal data class VerifiedPortal(val apiHost: String, val token: String, val watchdogSeconds: Int?)
 internal data class PortalSession(val token: String, val watchdogSeconds: Int?)
