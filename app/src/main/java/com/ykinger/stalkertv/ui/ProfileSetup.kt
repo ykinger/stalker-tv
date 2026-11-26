@@ -70,6 +70,22 @@ internal const val DIAGNOSTIC_LOGGING = true
 private const val LOGCAT_CHUNK_SIZE = 3_000
 private val wireRequestSequence = AtomicLong()
 
+/** Category totals are known; channel totals are not until the index finishes. */
+internal fun playlistPreparationProgress(scanning: Boolean, indexing: Boolean,
+    scanned: Int, total: Int): Float? {
+    if (!scanning && !indexing) return null
+    if (total <= 0) return 0.05f
+    val categoryProgress = (scanned.toFloat() / total).coerceIn(0f, 1f)
+    return categoryProgress * if (indexing) 0.9f else 1f
+}
+
+internal fun playlistPreparationDetail(scanning: Boolean, indexing: Boolean,
+    scanned: Int, total: Int, indexed: Int): String = buildList {
+    if (scanning) add(if (total > 0) "$scanned of $total categories scanned"
+        else "Reading portal categories")
+    if (indexing) add("$indexed channels indexed")
+}.joinToString(" • ")
+
 private fun logWireChunks(requestId: Long, field: String, value: String) {
     if (!BuildConfig.DEBUG) return
     val chunks = value.chunked(LOGCAT_CHUNK_SIZE).ifEmpty { listOf("") }
@@ -924,20 +940,17 @@ fun ProfileSetup() {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 val scanning = busy && scanningCategories
                 val indexing = busy && indexingChannels
+                val preparing = scanning || indexing
                 TvStatusPanel(
                     when {
                         !busy -> "Could not connect"
-                        scanning && indexing -> "Preparing search indexes…"
-                        scanning -> "Scanning categories…"
-                        indexing -> "Indexing channels…"
+                        preparing -> "Preparing playlist…"
                         else -> "Connecting to playlist…"
                     },
                     when {
                         !busy -> message
-                        scanning && totalCategories > 0 ->
-                            "Scanning $scannedCategories of $totalCategories categories"
-                        scanning -> "Reading the portal category list"
-                        indexing -> "Indexed $indexedChannels channels for search"
+                        preparing -> playlistPreparationDetail(scanning, indexing,
+                            scannedCategories, totalCategories, indexedChannels)
                         else -> "Checking your portal and preparing the guide"
                     },
                     loading = busy, modifier = Modifier.width(480.dp), shape = TvStatusShape.NONE,
@@ -946,11 +959,8 @@ fun ProfileSetup() {
                         { reconnectProfile?.let { connect(it, reconnectRefreshCategories) } }
                     },
                     retryModifier = Modifier.focusRequester(firstFocus),
-                    progress = if (scanning && totalCategories > 0)
-                        scannedCategories.toFloat() / totalCategories else null)
-                if (indexing) {
-                    TvInlineStatus("Indexed $indexedChannels channels", loading = true)
-                }
+                    progress = playlistPreparationProgress(scanning, indexing,
+                        scannedCategories, totalCategories))
                 channelIndexNotice?.let { Text(it, color = Color(0xFFF3D5B3)) }
                 if (!busy) {
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }
@@ -1183,17 +1193,14 @@ fun ProfileSetup() {
                     Text("Use the MAC address registered with your provider.", fontSize = 12.sp, color = settingsMuted)
                     ProfileField("Serial ID (optional)", serial, !busy) { serial = it }
                     if (message.isNotEmpty()) Text(message, color = Color(0xFFF3D5B3))
-                    if (busy && scanningCategories) {
-                        val progressMessage = if (totalCategories > 0)
-                            "Scanning $scannedCategories of $totalCategories categories"
-                        else "Reading the portal category list"
-                        TvInlineStatus(progressMessage, loading = true)
-                        if (totalCategories > 0) TvProgressBar(
-                            scannedCategories.toFloat() / totalCategories,
-                            Modifier.fillMaxWidth())
-                    }
-                    if (busy && indexingChannels) {
-                        TvInlineStatus("Indexed $indexedChannels channels for search", loading = true)
+                    if (busy && (scanningCategories || indexingChannels)) {
+                        TvInlineStatus("Preparing playlist… " +
+                            playlistPreparationDetail(scanningCategories, indexingChannels,
+                                scannedCategories, totalCategories, indexedChannels), loading = true)
+                        playlistPreparationProgress(scanningCategories, indexingChannels,
+                            scannedCategories, totalCategories)?.let {
+                            TvProgressBar(it, Modifier.fillMaxWidth())
+                        }
                     }
                 }
                 Column(Modifier.weight(0.55f).fillMaxHeight().background(settingsBackground).padding(20.dp),
