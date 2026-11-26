@@ -17,8 +17,8 @@ android {
         applicationId = "com.ykinger.stalkertv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-mock"
+        versionCode = 2
+        versionName = "0.1.0-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         listOf("HOST", "MAC", "SERIAL", "ADID", "RANDOM", "HW_VERSION_2", "HANDSHAKE_PREHASH", "PROFILE_PREHASH")
             .forEach { buildConfigField("String", "CAPTURED_$it", buildString("")) }

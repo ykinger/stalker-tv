@@ -59,6 +59,16 @@ For connected UI checks:
 
 The Gradle wrapper and dependency versions are pinned; the Gradle distribution is checksum-verified. First-time builds require internet access to Google Maven, Maven Central, and Gradle distribution hosting.
 
+### Versioning
+
+The Android version is declared in `app/build.gradle.kts`. `versionName` follows
+`MAJOR.MINOR.PATCH` with `-alpha.N`, `-beta.N`, or `-rc.N` for prereleases;
+`versionCode` must increase for every distributed build, including prereleases
+and hotfixes. Keep the package ID `com.ykinger.stalkertv` unchanged for updates.
+Record user-visible changes in [CHANGELOG.md](CHANGELOG.md), run the build,
+lint, and tests, then tag a release `v<versionName>` only when that build is
+actually distributed. Local debug builds need no tag or version bump.
+
 ### Debug portal diagnostics
 
 After retrying a connection in a **debug build**, read the app's diagnostic tag:
