@@ -730,6 +730,45 @@ class ConnectedTvFocusTest {
         org.junit.Assert.assertTrue(openedKinds.contains(ContentKind.MOVIE))
     }
 
+    @Test fun searchedChannelOutsideLoadedPageKeepsItsNameAndProgrammeInGuide() {
+        val first = Title("ch:1", "Alpha Channel", ContentKind.CHANNEL, "news")
+        val found = Title("ch:200", "Blue Channel", ContentKind.CHANNEL, "news")
+        val programmeIds = mutableListOf<String>()
+        val repository = object : SearchContentRepository {
+            override suspend fun catalogue() = loadPage(ContentKind.CHANNEL, null, 1)
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
+                ProviderResult.Success(Catalogue(listOf(Category("news", "News")),
+                    if (page == 1) listOf(first) else emptyList(), hasMore = page == 1))
+            override suspend fun searchChannels(query: String, limit: Int) =
+                ProviderResult.Success(SearchBatch(listOf(found)))
+            override suspend fun searchVod(query: String, page: Int) =
+                ProviderResult.Success(SearchBatch(emptyList()))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> {
+                programmeIds += channelId
+                return ProviderResult.Success(listOf(Programme("p:$channelId", channelId, "Blue Programme",
+                    java.time.Instant.now().minusSeconds(60), java.time.Instant.now().plusSeconds(1800))))
+            }
+            override suspend fun resolve(id: String) =
+                ProviderResult.Success(PlaybackSource("asset:///big_buck_bunny_sample.mp4", id))
+        }
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.onNode(hasContentDescription("Search") and hasClickAction()).performClick()
+        compose.onNode(hasSetTextAction()).performTextInput("Blue")
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithContentDescription("Blue Channel").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription("Channels search results").performScrollTo()
+        compose.onNode(hasText("Blue Channel") and hasClickAction()).performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Blue Channel").fetchSemanticsNodes().size >= 2 &&
+                compose.onAllNodesWithText("Blue Programme").fetchSemanticsNodes().isNotEmpty()
+        }
+        org.junit.Assert.assertTrue(programmeIds.contains(found.id))
+        compose.onNodeWithText("Alpha Channel").assertExists()
+    }
+
     @Test fun globalSearchRendersFirstVodPageBeforeLaterPagesFinish() {
         val secondPage = CompletableDeferred<Unit>()
         val repository = object : SearchContentRepository {

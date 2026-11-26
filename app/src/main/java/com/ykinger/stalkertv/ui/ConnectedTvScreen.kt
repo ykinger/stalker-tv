@@ -183,6 +183,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     val composeView = LocalView.current
     val keyboardController = LocalSoftwareKeyboardController.current
     var selectedId by remember { mutableStateOf<String?>(null) }
+    var selectedChannelTitle by remember { mutableStateOf<Title?>(null) }
     var playingId by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf<PlaybackSource?>(null) }
     var episodeQueue by remember { mutableStateOf<EpisodeQueue?>(null) }
@@ -268,6 +269,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         focusSelectedVodCategory = false
         source = null
         selectedId = null
+        selectedChannelTitle = null
         playingId = null
         area = if (item == "TV" || item == "Movies" || item == "Shows") "groups" else "content"
         when (item) {
@@ -382,6 +384,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
 
     fun openChannel(title: Title, expandWhenReady: Boolean = false) {
         if (fullScreen && resolving) return
+        selectedChannelTitle = title
         expandChannelId = title.id.takeIf { expandWhenReady }
         if (selectedId == title.id) {
             if (source != null) {
@@ -613,6 +616,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
 
     fun openChannelCategory(category: String?) {
         focusSelectedChannelCategory = true
+        selectedChannelTitle = null
         group = category
         area = "guide"
         focusedChannelId = null
@@ -962,7 +966,15 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     val loadingNext by model.loadingNext.collectAsStateWithLifecycle()
                     val pageFailed by model.pageFailed.collectAsStateWithLifecycle()
                     val channels = catalogue.titles.filter { it.kind == ContentKind.CHANNEL }
-                    val visible = channelsInGroup(catalogue, group, model.repository is PagedContentRepository)
+                    val pageChannels = channelsInGroup(catalogue, group, model.repository is PagedContentRepository)
+                    // Search (and remote channel switching) can select a channel
+                    // beyond the currently loaded guide page. Keep its own row
+                    // visible rather than showing the first page as if it were selected.
+                    val pinned = selectedChannelTitle?.takeIf { selected ->
+                        selected.id == selectedId && pageChannels.none { it.id == selected.id } &&
+                            (group == null || selected.categoryId == group)
+                    }
+                    val visible = if (pinned != null) listOf(pinned) + pageChannels else pageChannels
                     val allGenre = catalogue.categories.firstOrNull { it.id == "*" }
                     AnimatedVisibility(navigationVisible, enter = navigationEnter, exit = navigationExit) {
                     Column(Modifier.width(192.dp).fillMaxHeight().background(background)
@@ -999,7 +1011,9 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     }
                     }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
-                        GuideHeader(source, selectedId?.let { id -> channels.find { it.id == id } }, resolving, error,
+                        GuideHeader(source, selectedId?.let { id ->
+                            selectedChannelTitle?.takeIf { it.id == id } ?: channels.find { it.id == id }
+                        }, resolving, error,
                             selectedId?.let { id -> programmes[id].orEmpty().firstOrNull { it.start <= java.time.Instant.now() && it.end > java.time.Instant.now() } },
                             previewFocus, previewFocusable = previewRequested && source != null,
                             onDown = {
@@ -1083,7 +1097,9 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                             .background(if (focused) focusColor else background),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text("${visible.indexOf(title) + 1}", modifier = Modifier.width(38.dp).padding(start = 12.dp),
+                                        Text(if (title.id == pinned?.id) "•" else
+                                            "${pageChannels.indexOfFirst { it.id == title.id } + 1}",
+                                            modifier = Modifier.width(38.dp).padding(start = 12.dp),
                                             color = if (focused) Color.Black else muted)
                                         Box(Modifier.size(38.dp).background(cell, RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
                                             Text("TV", color = muted, fontSize = 12.sp)
