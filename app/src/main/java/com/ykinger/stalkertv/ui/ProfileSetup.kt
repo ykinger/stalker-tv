@@ -960,7 +960,8 @@ fun ProfileSetup() {
                     },
                     retryModifier = Modifier.focusRequester(firstFocus),
                     progress = playlistPreparationProgress(scanning, indexing,
-                        scannedCategories, totalCategories))
+                        scannedCategories, totalCategories),
+                    showIndeterminateProgress = true)
                 channelIndexNotice?.let { Text(it, color = Color(0xFFF3D5B3)) }
                 if (!busy) {
                     Button(onClick = { screen = "settings" }) { Text("Manage playlists") }

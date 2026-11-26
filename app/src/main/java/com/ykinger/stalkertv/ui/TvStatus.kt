@@ -8,12 +8,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -26,6 +28,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
@@ -43,7 +48,8 @@ internal enum class TvStatusShape { POSTERS, GUIDE, NONE }
 internal fun TvStatusPanel(title: String, detail: String? = null, loading: Boolean,
     modifier: Modifier = Modifier, shape: TvStatusShape = TvStatusShape.POSTERS,
     retryLabel: String = "Retry", onRetry: (() -> Unit)? = null,
-    retryModifier: Modifier = Modifier, progress: Float? = null) {
+    retryModifier: Modifier = Modifier, progress: Float? = null,
+    showIndeterminateProgress: Boolean = false) {
     val retryFocus = remember { FocusRequester() }
     LaunchedEffect(loading) {
         if (!loading && onRetry != null) {
@@ -58,7 +64,8 @@ internal fun TvStatusPanel(title: String, detail: String? = null, loading: Boole
         Box(Modifier.width(48.dp).height(4.dp).alpha(pulse).background(statusAccent, RoundedCornerShape(2.dp)))
         Text(title, color = Color.White, fontSize = 23.sp)
         detail?.let { Text(it, color = statusMuted, fontSize = 15.sp) }
-        progress?.let { TvProgressBar(it) }
+        if (progress != null) TvProgressBar(progress)
+        else if (loading && showIndeterminateProgress) TvIndeterminateProgressBar()
         if (loading) {
             Spacer(Modifier.height(6.dp))
             when (shape) {
@@ -77,8 +84,24 @@ internal fun TvStatusPanel(title: String, detail: String? = null, loading: Boole
 }
 
 @Composable
+internal fun TvIndeterminateProgressBar(modifier: Modifier = Modifier) {
+    val position = rememberInfiniteTransition(label = "Indeterminate progress")
+        .animateFloat(0f, 1f, infiniteRepeatable(tween(1_200), RepeatMode.Reverse),
+            label = "Progress position").value
+    BoxWithConstraints(modifier.fillMaxWidth().height(6.dp)
+        .semantics { progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate }
+        .background(statusSurface, RoundedCornerShape(3.dp))) {
+        Box(Modifier.offset(x = maxWidth * 0.7f * position)
+            .width(maxWidth * 0.3f).height(6.dp)
+            .background(statusAccent, RoundedCornerShape(3.dp)))
+    }
+}
+
+@Composable
 internal fun TvProgressBar(progress: Float, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().height(6.dp).background(statusSurface, RoundedCornerShape(3.dp))) {
+    Box(modifier.fillMaxWidth().height(6.dp)
+        .semantics { progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f) }
+        .background(statusSurface, RoundedCornerShape(3.dp))) {
         Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp)
             .background(statusAccent, RoundedCornerShape(3.dp)))
     }

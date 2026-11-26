@@ -21,6 +21,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -431,7 +433,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
             group = null
             section = "TV"
             area = "guide"
-            openChannel(title)
+            openChannel(title, expandWhenReady = true)
         } else {
             val target = if (title.kind == ContentKind.SERIES) ContentKind.SERIES else ContentKind.MOVIE
             section = if (target == ContentKind.SERIES) "Shows" else "Movies"
@@ -966,15 +968,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                     val loadingNext by model.loadingNext.collectAsStateWithLifecycle()
                     val pageFailed by model.pageFailed.collectAsStateWithLifecycle()
                     val channels = catalogue.titles.filter { it.kind == ContentKind.CHANNEL }
-                    val pageChannels = channelsInGroup(catalogue, group, model.repository is PagedContentRepository)
-                    // Search (and remote channel switching) can select a channel
-                    // beyond the currently loaded guide page. Keep its own row
-                    // visible rather than showing the first page as if it were selected.
-                    val pinned = selectedChannelTitle?.takeIf { selected ->
-                        selected.id == selectedId && pageChannels.none { it.id == selected.id } &&
-                            (group == null || selected.categoryId == group)
-                    }
-                    val visible = if (pinned != null) listOf(pinned) + pageChannels else pageChannels
+                    val visible = channelsInGroup(catalogue, group, model.repository is PagedContentRepository)
                     val allGenre = catalogue.categories.firstOrNull { it.id == "*" }
                     AnimatedVisibility(navigationVisible, enter = navigationEnter, exit = navigationExit) {
                     Column(Modifier.width(192.dp).fillMaxHeight().background(background)
@@ -1097,8 +1091,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                             .background(if (focused) focusColor else background),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text(if (title.id == pinned?.id) "•" else
-                                            "${pageChannels.indexOfFirst { it.id == title.id } + 1}",
+                                        Text("${visible.indexOf(title) + 1}",
                                             modifier = Modifier.width(38.dp).padding(start = 12.dp),
                                             color = if (focused) Color.Black else muted)
                                         Box(Modifier.size(38.dp).background(cell, RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
@@ -1697,7 +1690,7 @@ private fun SearchGroupResult(label: String, state: SearchGroupState, onSelect: 
         LazyRow(Modifier.fillMaxWidth().semantics { contentDescription = "$label search results" }.focusGroup(),
             state = rowState,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)) {
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             items(state.titles.size, key = { state.titles[it].id }) { index ->
                 val title = state.titles[index]
                 SearchResultCard(title, onFocus = {
@@ -1720,15 +1713,23 @@ private fun SearchGroupResult(label: String, state: SearchGroupState, onSelect: 
 @Composable
 private fun SearchResultCard(title: Title, onFocus: () -> Unit, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    Box(Modifier.width(190.dp).onFocusChanged {
+    val bringIntoView = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    val channel = title.kind == ContentKind.CHANNEL
+    Box(Modifier.width(if (channel) 190.dp else 140.dp)
+        .bringIntoViewRequester(bringIntoView).onFocusChanged {
         focused = it.isFocused
-        if (it.isFocused) onFocus()
+        if (it.isFocused) {
+            scope.launch { bringIntoView.bringIntoView() }
+            onFocus()
+        }
     }
         .semantics { contentDescription = title.name }
         .background(if (focused) focusColor else cell, RoundedCornerShape(6.dp))
         .clickable(onClick = onClick).focusable()) {
         Column {
-            Artwork(title, Modifier.fillMaxWidth().height(76.dp))
+            Artwork(title, Modifier.fillMaxWidth().height(if (channel) 76.dp else 210.dp),
+                contentScale = if (channel) ContentScale.Crop else ContentScale.Fit)
             Text(title.name, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 maxLines = 1, fontSize = 14.sp, color = if (focused) Color.Black else Color.White)
         }

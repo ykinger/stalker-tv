@@ -730,7 +730,7 @@ class ConnectedTvFocusTest {
         org.junit.Assert.assertTrue(openedKinds.contains(ContentKind.MOVIE))
     }
 
-    @Test fun searchedChannelOutsideLoadedPageKeepsItsNameAndProgrammeInGuide() {
+    @Test fun searchedChannelOpensFullScreenWithoutAddingGuideRow() {
         val first = Title("ch:1", "Alpha Channel", ContentKind.CHANNEL, "news")
         val found = Title("ch:200", "Blue Channel", ContentKind.CHANNEL, "news")
         val programmeIds = mutableListOf<String>()
@@ -762,10 +762,17 @@ class ConnectedTvFocusTest {
         compose.onNodeWithContentDescription("Channels search results").performScrollTo()
         compose.onNode(hasText("Blue Channel") and hasClickAction()).performClick()
         compose.waitUntil(5_000) {
-            compose.onAllNodesWithText("Blue Channel").fetchSemanticsNodes().size >= 2 &&
+            compose.onAllNodesWithContentDescription("Full-screen player").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Alpha Channel").assertDoesNotExist()
+        org.junit.Assert.assertTrue(programmeIds.contains(found.id))
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Blue Channel").fetchSemanticsNodes().isNotEmpty() &&
                 compose.onAllNodesWithText("Blue Programme").fetchSemanticsNodes().isNotEmpty()
         }
-        org.junit.Assert.assertTrue(programmeIds.contains(found.id))
+        org.junit.Assert.assertEquals(1, compose.onAllNodesWithText("Blue Channel").fetchSemanticsNodes().size)
         compose.onNodeWithText("Alpha Channel").assertExists()
     }
 
@@ -804,6 +811,24 @@ class ConnectedTvFocusTest {
                     compose.onAllNodesWithText("Blue Movie").fetchSemanticsNodes().isNotEmpty() &&
                     compose.onAllNodesWithText("Blue Show").fetchSemanticsNodes().isNotEmpty()
             }
+            val channelCard = compose.onNodeWithContentDescription("Blue Channel").fetchSemanticsNode().boundsInRoot
+            org.junit.Assert.assertTrue("Channel card should remain landscape", channelCard.width > channelCard.height)
+            compose.onNodeWithContentDescription("Blue Movie").requestFocus()
+            compose.waitUntil(5_000) {
+                val bounds = compose.onNodeWithContentDescription("Blue Movie").fetchSemanticsNode().boundsInRoot
+                bounds.height > bounds.width
+            }
+            val movieCard = compose.onNodeWithContentDescription("Blue Movie").fetchSemanticsNode().boundsInRoot
+            org.junit.Assert.assertTrue("Movie poster should be portrait: $movieCard", movieCard.height > movieCard.width)
+            compose.onNodeWithContentDescription("Blue Movie").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Blue Show").requestFocus()
+            compose.waitUntil(5_000) {
+                val bounds = compose.onNodeWithContentDescription("Blue Show").fetchSemanticsNode().boundsInRoot
+                bounds.height > bounds.width
+            }
+            val showCard = compose.onNodeWithContentDescription("Blue Show").fetchSemanticsNode().boundsInRoot
+            org.junit.Assert.assertTrue("Show poster should be portrait: $showCard", showCard.height > showCard.width)
+            compose.onNodeWithContentDescription("Blue Show").assertIsDisplayed()
             compose.onNodeWithText("Searching…").assertDoesNotExist()
             compose.onNodeWithText("Searching Movies…").assertDoesNotExist()
         } finally {

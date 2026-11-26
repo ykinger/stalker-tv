@@ -73,7 +73,8 @@ internal fun PosterCard(title: Title, modifier: Modifier = Modifier, showDetails
 }
 
 @Composable
-internal fun Artwork(title: Title, modifier: Modifier = Modifier) {
+internal fun Artwork(title: Title, modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop) {
     val drawable = when (title.artworkKey) {
         "mountain" -> R.drawable.poster_mountain
         "ocean" -> R.drawable.poster_ocean
@@ -87,10 +88,10 @@ internal fun Artwork(title: Title, modifier: Modifier = Modifier) {
     }
     Box(modifier.background(Color(0xFF303436)), contentAlignment = Alignment.Center) {
         if (drawable != null)
-            Image(painterResource(drawable), contentDescription = null, contentScale = ContentScale.Crop,
+            Image(painterResource(drawable), contentDescription = null, contentScale = contentScale,
                 modifier = Modifier.fillMaxSize())
         else if (remote != null)
-            Image(bitmap = remote!!, contentDescription = null, contentScale = ContentScale.Crop,
+            Image(bitmap = remote!!, contentDescription = null, contentScale = contentScale,
                 modifier = Modifier.fillMaxSize())
         if (drawable == null && remote == null)
             Text(title.name, fontSize = 19.sp, fontWeight = FontWeight.Bold,
