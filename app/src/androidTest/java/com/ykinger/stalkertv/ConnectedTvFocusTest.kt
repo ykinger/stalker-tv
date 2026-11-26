@@ -621,6 +621,7 @@ class ConnectedTvFocusTest {
     }
 
     @Test fun globalSearchGroupsMatchesAcrossChannelsMoviesAndShows() {
+        val openedKinds = mutableListOf<ContentKind>()
         val channels = listOf(
             Title("ch:1", "Alpha Channel", ContentKind.CHANNEL, "group"),
             Title("ch:3", "Blue Channel", ContentKind.CHANNEL, "group"),
@@ -628,8 +629,10 @@ class ConnectedTvFocusTest {
         )
         val repository = object : SearchContentRepository {
             override suspend fun catalogue() = ProviderResult.Success(Catalogue(emptyList(), channels))
-            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
-                ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int): ProviderResult<Catalogue> {
+                openedKinds += kind
+                return ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            }
             override suspend fun searchChannels(query: String, limit: Int) = ProviderResult.Success(
                 SearchBatch(channels.filter { it.name.contains(query, ignoreCase = true) }.take(limit)))
             override suspend fun searchVod(query: String, page: Int) = ProviderResult.Success(
@@ -660,10 +663,12 @@ class ConnectedTvFocusTest {
         compose.onNodeWithText("Red Movie").assertDoesNotExist()
 
         // Selecting a movie opens its detail screen.
+        compose.onNodeWithContentDescription("Movies search results").performScrollTo()
         compose.onNode(hasText("Blue Movie") and hasClickAction()).performClick()
         compose.waitUntil(5_000) {
-            compose.onAllNodesWithText("Back to Movies").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText("Play movie").fetchSemanticsNodes().isNotEmpty()
         }
+        org.junit.Assert.assertTrue(openedKinds.contains(ContentKind.MOVIE))
     }
 
     @Test fun globalSearchRendersFirstVodPageBeforeLaterPagesFinish() {
@@ -705,6 +710,48 @@ class ConnectedTvFocusTest {
             compose.onNodeWithText("Searching Movies…").assertDoesNotExist()
         } finally {
             secondPage.complete(Unit)
+        }
+    }
+
+    @Test fun globalSearchLanesScrollAndVodDoesNotWaitForChannels() {
+        val releaseChannels = CompletableDeferred<Unit>()
+        val repository = object : SearchContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
+                ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun searchChannels(query: String, limit: Int): ProviderResult<SearchBatch> {
+                releaseChannels.await()
+                return ProviderResult.Success(SearchBatch((1..30).map {
+                    Title("ch:$it", "Blue Channel $it", ContentKind.CHANNEL, "group")
+                }))
+            }
+            override suspend fun searchVod(query: String, page: Int) =
+                ProviderResult.Success(SearchBatch(listOf(
+                    Title("movie:1", "Blue Movie", ContentKind.MOVIE, "drama"),
+                    Title("show:1", "Blue Show", ContentKind.SERIES, "drama"))))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        try {
+            compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+            compose.onNode(hasContentDescription("Search") and hasClickAction()).performClick()
+            compose.onNode(hasSetTextAction()).performTextInput("Blue")
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText("Blue Movie").fetchSemanticsNodes().isNotEmpty() &&
+                    compose.onAllNodesWithText("Blue Show").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Channels").assertExists()
+            compose.onNodeWithText("Searching Channels…").assertExists()
+            releaseChannels.complete(Unit)
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText("Blue Channel 1").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithContentDescription("Channels search results").performScrollToIndex(29)
+            compose.onNodeWithText("Blue Channel 30").assertExists()
+        } finally {
+            releaseChannels.complete(Unit)
         }
     }
 }

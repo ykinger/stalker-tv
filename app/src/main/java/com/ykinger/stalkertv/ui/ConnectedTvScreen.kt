@@ -298,63 +298,69 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         val repository = model.repository
         val quick = repository as? SearchContentRepository
         if (quick != null) {
-            when (val result = quick.searchChannels(query, SEARCH_GROUP_LIMIT)) {
-                is ProviderResult.Success -> publish { state ->
-                    val batch = result.value
-                    state.copy(channels = appendSearchTitles(
-                        state.channels.copy(loading = false), batch.titles)
-                        .copy(hasMore = batch.hasMore))
-                }
-                is ProviderResult.Failure -> publish { state ->
-                    state.copy(channels = state.channels.copy(loading = false, message = result.message))
-                }
-                else -> publish { state ->
-                    state.copy(channels = state.channels.copy(loading = false,
-                        message = "Channel search is unavailable for this playlist."))
-                }
-            }
-            // Server-filtered VOD pages are mixed. One query per page serves both
-            // groups, and page one is published before any later page is requested.
-            var page = 1
-            var hasMore = true
-            while (hasMore && page <= 5) {
-                when (val result = quick.searchVod(query, page)) {
-                    is ProviderResult.Success -> {
-                        val batch = result.value
-                        val foundMovies = batch.titles.filter { it.kind != ContentKind.SERIES }
-                        val foundShows = batch.titles.filter { it.kind == ContentKind.SERIES }
-                        publish { state ->
-                            state.copy(
-                                movies = appendSearchTitles(state.movies, foundMovies)
-                                    .copy(loading = false, hasMore = batch.hasMore),
-                                shows = appendSearchTitles(state.shows, foundShows)
-                                    .copy(loading = false, hasMore = batch.hasMore),
-                            )
+            kotlinx.coroutines.coroutineScope {
+                launch {
+                    when (val result = quick.searchChannels(query, SEARCH_GROUP_LIMIT)) {
+                        is ProviderResult.Success -> publish { state ->
+                            val batch = result.value
+                            state.copy(channels = appendSearchTitles(
+                                state.channels.copy(loading = false), batch.titles)
+                                .copy(hasMore = batch.hasMore))
                         }
-                        hasMore = batch.hasMore && batch.titles.isNotEmpty()
-                    }
-                    is ProviderResult.Failure -> {
-                        publish { state ->
-                            state.copy(
-                                movies = state.movies.copy(loading = false, message = result.message),
-                                shows = state.shows.copy(loading = false, message = result.message),
-                            )
+                        is ProviderResult.Failure -> publish { state ->
+                            state.copy(channels = state.channels.copy(loading = false, message = result.message))
                         }
-                        hasMore = false
-                    }
-                    else -> {
-                        publish { state ->
-                            state.copy(
-                                movies = state.movies.copy(loading = false,
-                                    message = "VOD search is unavailable for this playlist."),
-                                shows = state.shows.copy(loading = false,
-                                    message = "VOD search is unavailable for this playlist."),
-                            )
+                        else -> publish { state ->
+                            state.copy(channels = state.channels.copy(loading = false,
+                                message = "Channel search is unavailable for this playlist."))
                         }
-                        hasMore = false
                     }
                 }
-                page++
+                launch {
+                    // Server-filtered VOD pages are mixed. Publish page one before
+                    // requesting later pages, independently of the local channel index.
+                    var page = 1
+                    var hasMore = true
+                    while (hasMore && page <= 5) {
+                        when (val result = quick.searchVod(query, page)) {
+                            is ProviderResult.Success -> {
+                                val batch = result.value
+                                val foundMovies = batch.titles.filter { it.kind != ContentKind.SERIES }
+                                val foundShows = batch.titles.filter { it.kind == ContentKind.SERIES }
+                                hasMore = batch.hasMore && batch.titles.isNotEmpty()
+                                publish { state ->
+                                    state.copy(
+                                        movies = appendSearchTitles(state.movies, foundMovies)
+                                            .copy(loading = hasMore && page < 5, hasMore = batch.hasMore),
+                                        shows = appendSearchTitles(state.shows, foundShows)
+                                            .copy(loading = hasMore && page < 5, hasMore = batch.hasMore),
+                                    )
+                                }
+                            }
+                            is ProviderResult.Failure -> {
+                                publish { state ->
+                                    state.copy(
+                                        movies = state.movies.copy(loading = false, message = result.message),
+                                        shows = state.shows.copy(loading = false, message = result.message),
+                                    )
+                                }
+                                hasMore = false
+                            }
+                            else -> {
+                                publish { state ->
+                                    state.copy(
+                                        movies = state.movies.copy(loading = false,
+                                            message = "VOD search is unavailable for this playlist."),
+                                        shows = state.shows.copy(loading = false,
+                                            message = "VOD search is unavailable for this playlist."),
+                                    )
+                                }
+                                hasMore = false
+                            }
+                        }
+                        page++
+                    }
+                }
             }
         } else {
             // Offline/demo repositories have no server search and no complete
@@ -426,6 +432,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     }
 
     fun openSearchResult(title: Title) {
+        keyboardController?.hide()
         if (title.kind == ContentKind.CHANNEL) {
             group = null
             section = "TV"
@@ -1256,10 +1263,6 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                                     SearchGroupResult("Channels", results.channels, ::openSearchResult)
                                     SearchGroupResult("Movies", results.movies, ::openSearchResult)
                                     SearchGroupResult("Shows", results.shows, ::openSearchResult)
-                                    val hasMessage = results.channels.message != null ||
-                                        results.movies.message != null || results.shows.message != null
-                                    if (results.isEmpty && !results.anyLoading && !hasMessage)
-                                        Text("No matches for “${search.trim()}”", color = muted)
                                 }
                             }
                         }
@@ -1610,23 +1613,40 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
 
 @Composable
 private fun SearchGroupResult(label: String, state: SearchGroupState, onSelect: (Title) -> Unit) {
+    Text(label, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 8.dp))
     if (state.loading && state.titles.isEmpty()) TvInlineStatus("Searching $label…", loading = true)
     state.message?.let { TvInlineStatus(it, loading = false) }
-    SearchResultGroup(label, state.titles, state.truncated || state.hasMore, onSelect)
+    if (state.titles.isNotEmpty()) {
+        LazyRow(Modifier.fillMaxWidth().semantics { contentDescription = "$label search results" }.focusGroup(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)) {
+            items(state.titles, key = { it.id }) { title ->
+                SearchResultCard(title) {
+                    onSelect(title)
+                }
+            }
+        }
+        if (state.truncated || state.hasMore)
+            Text("Showing first ${state.titles.size} matches", color = muted, fontSize = 12.sp)
+    } else if (!state.loading && state.message == null) {
+        Text("No ${label.lowercase()} found", color = muted, fontSize = 14.sp)
+    }
 }
 
 @Composable
-private fun SearchResultGroup(label: String, titles: List<Title>, truncated: Boolean,
-    onSelect: (Title) -> Unit) {
-    if (titles.isEmpty()) return
-    Text(label, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(top = 8.dp))
-    titles.forEach { title ->
-        GuideAction(title.name, modifier = Modifier.semantics { contentDescription = title.name }) {
-            onSelect(title)
+private fun SearchResultCard(title: Title, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Box(Modifier.width(190.dp).onFocusChanged { focused = it.isFocused }
+        .semantics { contentDescription = title.name }
+        .background(if (focused) focusColor else cell, RoundedCornerShape(6.dp))
+        .clickable(onClick = onClick).focusable()) {
+        Column {
+            Artwork(title, Modifier.fillMaxWidth().height(76.dp))
+            Text(title.name, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                maxLines = 1, fontSize = 14.sp, color = if (focused) Color.Black else Color.White)
         }
     }
-    if (truncated) Text("Showing first ${titles.size} matches", color = muted, fontSize = 12.sp)
 }
 
 @Composable
