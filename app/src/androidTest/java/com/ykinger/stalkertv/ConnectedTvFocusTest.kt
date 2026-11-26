@@ -571,7 +571,7 @@ class ConnectedTvFocusTest {
     }
 
     @OptIn(ExperimentalTestApi::class)
-    @Test fun leftFromLaterEpisodeStepsBackBeforeOpeningTheMenu() {
+    @Test fun leftFromFirstEpisodeWrapsWithinSeasonAndBackReturnsToSelectedShow() {
         val show = Title("series:1", "A Show", ContentKind.SERIES, "drama")
         val episodes = listOf(
             Title("ep:1", "Pilot", ContentKind.EPISODE, "season:1"),
@@ -612,12 +612,19 @@ class ConnectedTvFocusTest {
         }
         compose.onNodeWithContentDescription("Episode 2: Second").assertExists()
 
-        // Left on the first episode still opens the category menu.
+        // Left on the first episode wraps to the last, without entering the category menu.
         pressLeft()
         compose.waitUntil(5_000) {
-            compose.onAllNodes(hasText("Drama") and hasClickAction() and isFocused())
+            compose.onAllNodes(hasContentDescription("Episode 3: Third") and isFocused())
                 .fetchSemanticsNodes().isNotEmpty()
         }
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasContentDescription("A Show") and isFocused())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Drama").assertExists()
     }
 
     @Test fun globalSearchGroupsMatchesAcrossChannelsMoviesAndShows() {
@@ -721,7 +728,7 @@ class ConnectedTvFocusTest {
                 ProviderResult.Success(Catalogue(emptyList(), emptyList()))
             override suspend fun searchChannels(query: String, limit: Int): ProviderResult<SearchBatch> {
                 releaseChannels.await()
-                return ProviderResult.Success(SearchBatch((1..30).map {
+                return ProviderResult.Success(SearchBatch((1..45).map {
                     Title("ch:$it", "Blue Channel $it", ContentKind.CHANNEL, "group")
                 }))
             }
@@ -748,10 +755,50 @@ class ConnectedTvFocusTest {
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithText("Blue Channel 1").fetchSemanticsNodes().isNotEmpty()
             }
-            compose.onNodeWithContentDescription("Channels search results").performScrollToIndex(29)
-            compose.onNodeWithText("Blue Channel 30").assertExists()
+            compose.onNodeWithContentDescription("Channels search results").performScrollToIndex(44)
+            compose.onNodeWithText("Blue Channel 45").assertExists()
         } finally {
             releaseChannels.complete(Unit)
         }
+    }
+
+    @Test fun globalSearchLoadsPastFiveVodPagesWhenScrolling() {
+        val requested = mutableListOf<Int>()
+        val repository = object : SearchContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun loadPage(kind: ContentKind, categoryId: String?, page: Int) =
+                ProviderResult.Success(Catalogue(emptyList(), emptyList()))
+            override suspend fun searchChannels(query: String, limit: Int) =
+                ProviderResult.Success(SearchBatch(emptyList()))
+            override suspend fun searchVod(query: String, page: Int): ProviderResult<SearchBatch> {
+                requested += page
+                return ProviderResult.Success(SearchBatch((1..6).map {
+                    Title("movie:$page:$it", "Blue Movie $page-$it", ContentKind.MOVIE, "drama")
+                }, hasMore = page < 7))
+            }
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String): ProviderResult<List<Season>> = ProviderResult.Unsupported
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Unsupported
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> = ProviderResult.Unsupported
+        }
+        compose.setContent { ConnectedTvScreen(AppContainer(repository)) {} }
+        compose.onNode(hasContentDescription("Search") and hasClickAction()).performClick()
+        compose.onNode(hasSetTextAction()).performTextInput("Blue")
+        for (page in 1..6) {
+            compose.waitUntil(5_000) {
+                requested.contains(page) &&
+                    compose.onAllNodesWithContentDescription("Movies search results").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.waitForIdle()
+            compose.onNodeWithContentDescription("Movies search results").performScrollTo()
+            compose.onNodeWithContentDescription("Movies search results").performScrollToIndex(page * 6 - 1)
+            compose.onNodeWithContentDescription("Blue Movie $page-6").requestFocus()
+        }
+        compose.waitUntil(5_000) {
+            requested.contains(7)
+        }
+        compose.onNodeWithContentDescription("Movies search results").performScrollToIndex(41)
+        compose.onNodeWithText("Blue Movie 7-6").assertExists()
+        org.junit.Assert.assertEquals((1..7).toList(), requested)
     }
 }

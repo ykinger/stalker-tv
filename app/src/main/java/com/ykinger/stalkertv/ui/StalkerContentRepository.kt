@@ -105,7 +105,7 @@ internal class StalkerContentRepository(
     /** One mixed VOD query per page; TiviMate's duplicate movie/show request is unnecessary. */
     override suspend fun searchVod(query: String, page: Int): ProviderResult<SearchBatch> =
         safely("search.vod") {
-            require(page in 1..250)
+            require(page >= 1)
             val term = query.trim().ifBlank { return@safely ProviderResult.Success(SearchBatch(emptyList())) }
             val response = session.request(
                 "type=vod&action=get_ordered_list&category=0&sortby=name" +
@@ -115,7 +115,7 @@ internal class StalkerContentRepository(
             val pageTitles = parseRows(rows, kindHint = null, categoryId = null)
             val total = result.optInt("total_items", -1)
             val pageSize = result.optInt("max_page_items", 14).takeIf { it > 0 } ?: 14
-            val hasMore = rows.length() > 0 && page < 250 &&
+            val hasMore = rows.length() > 0 &&
                 (if (total >= 0) page.toLong() * pageSize < total else rows.length() >= pageSize)
             ProviderResult.Success(SearchBatch(pageTitles, hasMore))
         }
