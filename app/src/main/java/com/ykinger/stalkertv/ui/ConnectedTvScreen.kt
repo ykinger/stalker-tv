@@ -108,6 +108,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 
 private val background = Color(0xFF101314)
 private val panel = Color(0xFF24282A)
@@ -184,6 +185,7 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
     var selectedId by remember { mutableStateOf<String?>(null) }
     var playingId by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf<PlaybackSource?>(null) }
+    var episodeQueue by remember { mutableStateOf<EpisodeQueue?>(null) }
     var resolving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var fullScreen by remember { mutableStateOf(false) }
@@ -483,7 +485,10 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
 
     suspend fun fetchEpisodePage(show: Title, season: Season, next: Int): Boolean {
         val current = seasonEpisodes[season.id] ?: SeasonEpisodeState()
-        if (current.loading) return false
+        if (current.loading) {
+            snapshotFlow { seasonEpisodes[season.id]?.loading != true }.first { it }
+            return (seasonEpisodes[season.id]?.page ?: 0) >= next
+        }
         seasonEpisodes[season.id] = current.copy(loading = true, error = null)
         val result = model.repository.episodes(show.id, season.id, next)
         if (vodTitle?.id != show.id) return false
@@ -520,64 +525,69 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
         }
     }
 
-    fun changeEpisode(direction: Int) {
-        if (resolving) return
-        val show = vodTitle ?: return
-        val currentId = playingId ?: return
-        scope.launch {
-            for ((seasonIndex, season) in seasons.withIndex()) {
-                var page = seasonEpisodes[season.id] ?: continue
-                var index = page.episodes.indexOfFirst { it.id == currentId }
-                if (index < 0) continue
-                if (direction > 0) {
-                    if (index + 1 < page.episodes.size) {
-                        playVod(page.episodes[index + 1])
-                        return@launch
-                    }
-                    while (page.hasMore) {
-                        if (!fetchEpisodePage(show, season, page.page + 1)) return@launch
-                        page = seasonEpisodes[season.id] ?: return@launch
-                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
-                        index = page.episodes.indexOfFirst { it.id == currentId }
-                        if (index + 1 < page.episodes.size) {
-                            playVod(page.episodes[index + 1])
-                            return@launch
-                        }
-                    }
-                    for (nextSeason in seasons.drop(seasonIndex + 1)) {
-                        if (seasonEpisodes[nextSeason.id] == null &&
-                            !fetchEpisodePage(show, nextSeason, 1)) return@launch
-                        val next = seasonEpisodes[nextSeason.id]?.episodes?.firstOrNull()
-                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
-                        if (next != null) { playVod(next); return@launch }
-                    }
-                } else {
-                    var previous = page.episodes.getOrNull(index - 1)
-                    while (previous == null && page.hasMore &&
-                        (model.repository as? EpisodeOrderSource)?.episodeNumber(currentId) != 1) {
-                        if (!fetchEpisodePage(show, season, page.page + 1)) return@launch
-                        page = seasonEpisodes[season.id] ?: return@launch
-                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
-                        index = page.episodes.indexOfFirst { it.id == currentId }
-                        previous = page.episodes.getOrNull(index - 1)
-                    }
-                    if (previous == null) for (earlier in seasons.take(seasonIndex).asReversed()) {
-                        if (seasonEpisodes[earlier.id] == null &&
-                            !fetchEpisodePage(show, earlier, 1)) return@launch
-                        var earlierPage = seasonEpisodes[earlier.id] ?: return@launch
-                        while (earlierPage.hasMore) {
-                            if (!fetchEpisodePage(show, earlier, earlierPage.page + 1)) return@launch
-                            earlierPage = seasonEpisodes[earlier.id] ?: return@launch
-                        }
-                        if (vodTitle?.id != show.id || playingId != currentId) return@launch
-                        previous = earlierPage.episodes.lastOrNull()
-                        if (previous != null) break
-                    }
-                    if (previous != null) playVod(previous)
+    suspend fun adjacentEpisode(show: Title, currentId: String, direction: Int): Title? {
+        for ((seasonIndex, season) in seasons.withIndex()) {
+            var page = seasonEpisodes[season.id] ?: continue
+            var index = page.episodes.indexOfFirst { it.id == currentId }
+            if (index < 0) continue
+            if (direction > 0) {
+                page.episodes.getOrNull(index + 1)?.let { return it }
+                while (page.hasMore) {
+                    if (!fetchEpisodePage(show, season, page.page + 1)) return null
+                    page = seasonEpisodes[season.id] ?: return null
+                    if (vodTitle?.id != show.id || playingId != currentId) return null
+                    index = page.episodes.indexOfFirst { it.id == currentId }
+                    page.episodes.getOrNull(index + 1)?.let { return it }
                 }
-                return@launch
+                for (nextSeason in seasons.drop(seasonIndex + 1)) {
+                    if ((seasonEpisodes[nextSeason.id]?.page ?: 0) == 0 &&
+                        !fetchEpisodePage(show, nextSeason, 1)) return null
+                    if (vodTitle?.id != show.id || playingId != currentId) return null
+                    seasonEpisodes[nextSeason.id]?.episodes?.firstOrNull()?.let { return it }
+                }
+            } else {
+                var previous = page.episodes.getOrNull(index - 1)
+                while (previous == null && page.hasMore &&
+                    (model.repository as? EpisodeOrderSource)?.episodeNumber(currentId) != 1) {
+                    if (!fetchEpisodePage(show, season, page.page + 1)) return null
+                    page = seasonEpisodes[season.id] ?: return null
+                    if (vodTitle?.id != show.id || playingId != currentId) return null
+                    index = page.episodes.indexOfFirst { it.id == currentId }
+                    previous = page.episodes.getOrNull(index - 1)
+                }
+                if (previous != null) return previous
+                for (earlier in seasons.take(seasonIndex).asReversed()) {
+                    if ((seasonEpisodes[earlier.id]?.page ?: 0) == 0 &&
+                        !fetchEpisodePage(show, earlier, 1)) return null
+                    var earlierPage = seasonEpisodes[earlier.id] ?: return null
+                    while (earlierPage.hasMore) {
+                        if (!fetchEpisodePage(show, earlier, earlierPage.page + 1)) return null
+                        earlierPage = seasonEpisodes[earlier.id] ?: return null
+                    }
+                    if (vodTitle?.id != show.id || playingId != currentId) return null
+                    earlierPage.episodes.lastOrNull()?.let { return it }
+                }
             }
+            return null
         }
+        return null
+    }
+
+    LaunchedEffect(fullScreen, playingId, vodTitle?.id, source) {
+        episodeQueue = null
+        val show = vodTitle?.takeIf { it.kind == ContentKind.SERIES } ?: return@LaunchedEffect
+        val currentId = playingId?.takeIf { it.startsWith("episode:") } ?: return@LaunchedEffect
+        if (!fullScreen || source == null) return@LaunchedEffect
+        suspend fun neighbor(direction: Int): EpisodePlayback? {
+            val adjacent = adjacentEpisode(show, currentId, direction) ?: return null
+            val resolved = model.repository.resolve(adjacent.id) as? ProviderResult.Success ?: return null
+            return EpisodePlayback(adjacent.id, resolved.value)
+        }
+        // Starting the selected episode never waits for these optional links.
+        val next = neighbor(1)
+        val previous = neighbor(-1)
+        if (vodTitle?.id == show.id && playingId == currentId && fullScreen)
+            episodeQueue = EpisodeQueue(currentId, previous, next)
     }
 
     fun openVodCategory(kind: ContentKind, category: String?) {
@@ -775,8 +785,11 @@ internal fun ConnectedTvScreen(container: AppContainer, onManagePlaylists: () ->
                 channels.getOrNull(channelIndex + 1)?.let { openChannel(it, expandWhenReady = true) } },
             onChannelDown = { if (channelIndex >= 0)
                 channels.getOrNull(channelIndex - 1)?.let { openChannel(it, expandWhenReady = true) } },
-            onNextEpisode = { changeEpisode(1) },
-            onPreviousEpisode = { changeEpisode(-1) },
+            episodeId = playingId?.takeIf { section == "Shows" },
+            episodeQueue = episodeQueue,
+            onEpisodeChanged = { id ->
+                if (id != playingId && vodTitle?.kind == ContentKind.SERIES) playingId = id
+            },
             episode = section == "Shows" && playingId?.startsWith("episode:") == true,
             status = if (resolving) "Loading…" else error,
             onBack = {

@@ -34,33 +34,70 @@ import androidx.tv.material3.Text
 import com.ykinger.stalkertv.R
 import com.ykinger.stalkertv.BuildConfig
 import com.ykinger.stalkertv.core.PlaybackSource
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
+
+/** A resolved, bounded episode window; unavailable links are left out of the player timeline. */
+data class EpisodePlayback(val id: String, val source: PlaybackSource)
+data class EpisodeQueue(val currentId: String, val previous: EpisodePlayback? = null,
+    val next: EpisodePlayback? = null)
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun SamplePlayer(source: PlaybackSource, live: Boolean = false,
     onChannelUp: () -> Unit = {}, onChannelDown: () -> Unit = {},
-    onNextEpisode: () -> Unit = {}, onPreviousEpisode: () -> Unit = {},
+    episodeId: String? = null, episodeQueue: EpisodeQueue? = null,
+    onEpisodeChanged: (String) -> Unit = {},
     episode: Boolean = false, status: String? = null, onBack: () -> Unit) {
     val context = LocalContext.current
+    val currentEpisodeChanged by rememberUpdatedState(onEpisodeChanged)
     var error by remember(source) { mutableStateOf(false) }
     var resumePlayback by remember(source) { mutableStateOf(true) }
+    val headersByUri = remember(context, source) {
+        ConcurrentHashMap<String, Map<String, String>>().apply { put(source.uri, source.headers) }
+    }
+    val activeHeaders = remember(context, source) { AtomicReference(source.headers) }
+    val initialEpisodeId = remember(context, source) { episodeId }
     val player =
         remember(context, source) {
-            val http = DefaultHttpDataSource.Factory().setDefaultRequestProperties(source.headers)
-            // Media3 otherwise overrides configured Accept-Encoding with identity.
-            // Allow gzip for HLS manifests only; keep segment/range requests unchanged.
-            val streamHttp = if (source.headers["Accept-Encoding"] == "gzip")
-                ResolvingDataSource.Factory(http, ResolvingDataSource.Resolver { spec ->
-                    if (spec.uri.path?.endsWith(".m3u8", ignoreCase = true) == true)
-                        spec.buildUpon().setFlags(spec.flags or DataSpec.FLAG_ALLOW_GZIP).build()
-                    else spec
-                }) else http
+            val http = DefaultHttpDataSource.Factory()
+            val streamHttp = ResolvingDataSource.Factory(http, ResolvingDataSource.Resolver { spec ->
+                // A playlist can contain links with different portal media headers.
+                val headers = headersByUri[spec.uri.toString()] ?: activeHeaders.get()
+                val builder = spec.buildUpon().setHttpRequestHeaders(headers + spec.httpRequestHeaders)
+                // Media3 otherwise overrides configured Accept-Encoding with identity.
+                // Allow gzip for HLS manifests only; keep segment/range requests unchanged.
+                if (headers["Accept-Encoding"] == "gzip" &&
+                    spec.uri.path?.endsWith(".m3u8", ignoreCase = true) == true)
+                    builder.setFlags(spec.flags or DataSpec.FLAG_ALLOW_GZIP)
+                builder.build()
+            })
             val mediaSource = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, streamHttp))
             ExoPlayer.Builder(context).setMediaSourceFactory(mediaSource).build().apply {
-                setMediaItem(MediaItem.fromUri(source.uri))
+                setMediaItem(MediaItem.Builder().setUri(source.uri)
+                    .setMediaId(initialEpisodeId ?: source.uri).build())
                 prepare()
             }
         }
+    // Keep the playing item intact when adjacent links arrive or the player
+    // advances. Removing only non-current entries never resets playback position.
+    LaunchedEffect(player, episodeQueue) {
+        val queue = episodeQueue ?: return@LaunchedEffect
+        if (player.currentMediaItem?.mediaId != queue.currentId) return@LaunchedEffect
+        val current = player.currentMediaItem ?: return@LaunchedEffect
+        val index = player.currentMediaItemIndex
+        queue.previous?.let { headersByUri[it.source.uri] = it.source.headers }
+        queue.next?.let { headersByUri[it.source.uri] = it.source.headers }
+        if (index + 1 < player.mediaItemCount) player.removeMediaItems(index + 1, player.mediaItemCount)
+        if (index > 0) player.removeMediaItems(0, index)
+        queue.previous?.let {
+            player.addMediaItem(0, MediaItem.Builder().setMediaId(it.id).setUri(it.source.uri).build())
+        }
+        queue.next?.let {
+            player.addMediaItem(MediaItem.Builder().setMediaId(it.id).setUri(it.source.uri).build())
+        }
+        check(player.currentMediaItem?.mediaId == current.mediaId)
+    }
     DisposableEffect(player) {
         val listener =
             object : Player.Listener {
@@ -87,6 +124,11 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false,
                             "cause=${cause?.javaClass?.simpleName ?: "none"} " +
                             "http=${status ?: "none"}")
                     }
+                }
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    val id = mediaItem?.mediaId ?: return
+                    activeHeaders.set(headersByUri[mediaItem.localConfiguration?.uri.toString()] ?: source.headers)
+                    if (initialEpisodeId != null) currentEpisodeChanged(id)
                 }
             }
         player.addListener(listener)
@@ -133,8 +175,6 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false,
                         bindPlayer(player)
                         channelUp = onChannelUp
                         channelDown = onChannelDown
-                        nextEpisode = onNextEpisode
-                        previousEpisode = onPreviousEpisode
                         episodeControls = episode
                         useController = true
                         controllerAutoShow = !live
@@ -153,8 +193,6 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false,
                     it.bindPlayer(player)
                     it.channelUp = onChannelUp
                     it.channelDown = onChannelDown
-                    it.nextEpisode = onNextEpisode
-                    it.previousEpisode = onPreviousEpisode
                     it.episodeControls = episode
                 },
                 onRelease = { it.clearPlayer() },
@@ -171,13 +209,18 @@ fun SamplePlayer(source: PlaybackSource, live: Boolean = false,
 private class RemotePlayerView(context: Context, private val live: Boolean) : PlayerView(context) {
     var channelUp: () -> Unit = {}
     var channelDown: () -> Unit = {}
-    var nextEpisode: () -> Unit = {}
-    var previousEpisode: () -> Unit = {}
     var episodeControls: Boolean = false
     var restartedEpisode = false
+    private var lastEpisodeId: String? = null
     private val episodeButtonListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
-            post { enableEpisodeButtons() }
+            post { enablePreviousButton() }
+        }
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (mediaItem?.mediaId != lastEpisodeId) {
+                restartedEpisode = false
+                lastEpisodeId = mediaItem?.mediaId
+            }
         }
     }
 
@@ -185,6 +228,7 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
         if (player === playback) return
         if (isAttachedToWindow) player?.removeListener(episodeButtonListener)
         restartedEpisode = false
+        lastEpisodeId = playback.currentMediaItem?.mediaId
         player = playback
         if (isAttachedToWindow) playback.addListener(episodeButtonListener)
     }
@@ -194,13 +238,9 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
         player = null
     }
 
-    private fun enableEpisodeButtons() {
+    private fun enablePreviousButton() {
         if (!episodeControls || !isControllerFullyVisible) return
         findViewById<View>(androidx.media3.ui.R.id.exo_prev)?.apply {
-            isEnabled = true
-            isFocusable = true
-        }
-        findViewById<View>(androidx.media3.ui.R.id.exo_next)?.apply {
             isEnabled = true
             isFocusable = true
         }
@@ -237,19 +277,17 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
                 setKeyTimeIncrement(10_000L)
             }
             if (episodeControls) {
-                findViewById<View>(androidx.media3.ui.R.id.exo_next)?.setOnClickListener { nextEpisode() }
                 findViewById<View>(androidx.media3.ui.R.id.exo_prev)?.setOnClickListener {
                     val playback = player
                     if (!restartedEpisode) {
                         playback?.seekTo(0)
                         restartedEpisode = true
-                    } else {
-                        restartedEpisode = false
-                        previousEpisode()
+                    } else if (playback?.hasPreviousMediaItem() == true) {
+                        playback.seekToPreviousMediaItem()
                     }
                 }
             }
-            post { enableEpisodeButtons() }
+            post { enablePreviousButton() }
         }
         if (isControllerFullyVisible) {
             findViewById<View>(if (live) androidx.media3.ui.R.id.exo_settings
@@ -273,7 +311,7 @@ private class RemotePlayerView(context: Context, private val live: Boolean) : Pl
                     "focus=${focusTarget(findFocus())}")
             if (isAttachedToWindow) {
                 if (visible) {
-                    post { enableEpisodeButtons() }
+                    post { enablePreviousButton() }
                     // Focus Play/Pause before the newly visible controller is drawn.
                     findViewById<View>(if (live) androidx.media3.ui.R.id.exo_settings
                         else androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()

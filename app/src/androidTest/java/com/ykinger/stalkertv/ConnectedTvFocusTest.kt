@@ -570,6 +570,58 @@ class ConnectedTvFocusTest {
         org.junit.Assert.assertEquals(listOf("episode:1"), resolved)
     }
 
+    @Test fun showPlayerResolvesNextEpisodeIntoNativePlaylist() {
+        val show = Title("series:1", "A Show", ContentKind.SERIES, "drama")
+        val resolved = mutableListOf<String>()
+        var root: android.view.View? = null
+        val repository = object : ContentRepository {
+            override suspend fun catalogue() = ProviderResult.Success(Catalogue(
+                listOf(Category("drama", "Drama")), listOf(show)))
+            override suspend fun details(id: String): ProviderResult<Title> = ProviderResult.Unsupported
+            override suspend fun seasons(seriesId: String) = ProviderResult.Success(
+                listOf(Season("season:1", show.id, 1, emptyList())))
+            override suspend fun episodes(seriesId: String, seasonId: String, page: Int) =
+                ProviderResult.Success(EpisodePage(listOf(
+                    Title("episode:1", "Pilot", ContentKind.EPISODE, seasonId),
+                    Title("episode:2", "Second", ContentKind.EPISODE, seasonId))))
+            override suspend fun programmes(channelId: String): ProviderResult<List<Programme>> = ProviderResult.Empty
+            override suspend fun resolve(id: String): ProviderResult<PlaybackSource> {
+                resolved += id
+                return ProviderResult.Success(PlaybackSource("asset:///big_buck_bunny_sample.mp4", id))
+            }
+        }
+        compose.setContent {
+            root = androidx.compose.ui.platform.LocalView.current
+            ConnectedTvScreen(AppContainer(repository)) {}
+        }
+        compose.onNode(hasContentDescription("Shows") and hasClickAction()).performClick()
+        compose.onNode(hasText("Drama") and hasClickAction()).performClick()
+        compose.onNodeWithContentDescription("A Show").performClick()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_CENTER)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Play S1 E1").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Play S1 E1").performClick()
+        val remote = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        compose.waitUntil(10_000) {
+            var ready = false
+            remote.runOnMainSync {
+                val playback = root?.rootView?.findViewById<androidx.media3.ui.PlayerView>(R.id.sample_player)?.player
+                ready = playback?.currentMediaItem?.mediaId == "episode:1" &&
+                    playback?.hasNextMediaItem() == true
+            }
+            ready
+        }
+        remote.runOnMainSync {
+            val view = root!!.rootView.findViewById<androidx.media3.ui.PlayerView>(R.id.sample_player)
+            view.showController()
+            view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next).performClick()
+            org.junit.Assert.assertEquals("episode:2", view.player!!.currentMediaItem?.mediaId)
+        }
+        compose.waitUntil(5_000) { resolved.contains("episode:2") }
+    }
+
     @OptIn(ExperimentalTestApi::class)
     @Test fun leftFromFirstEpisodeWrapsWithinSeasonAndBackReturnsToSelectedShow() {
         val show = Title("series:1", "A Show", ContentKind.SERIES, "drama")

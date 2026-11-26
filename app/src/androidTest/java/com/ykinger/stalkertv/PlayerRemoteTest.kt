@@ -2,6 +2,7 @@ package com.ykinger.stalkertv
 
 import android.view.KeyEvent
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.*
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.media3.common.Player
@@ -12,6 +13,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ykinger.stalkertv.core.PlaybackSource
 import com.ykinger.stalkertv.ui.SamplePlayer
+import com.ykinger.stalkertv.ui.EpisodePlayback
+import com.ykinger.stalkertv.ui.EpisodeQueue
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
@@ -87,9 +90,19 @@ class PlayerRemoteTest {
             visible
         }
         remote.runOnMainSync { view.hideController(); view.requestFocus() }
+        compose.waitUntil(5_000) {
+            var settled = false
+            remote.runOnMainSync { settled = !view.isControllerFullyVisible && view.findFocus() === view }
+            settled
+        }
         remote.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
         remote.runOnMainSync { assertTrue(view.player!!.playWhenReady) }
         remote.runOnMainSync { view.hideController(); view.requestFocus() }
+        compose.waitUntil(5_000) {
+            var settled = false
+            remote.runOnMainSync { settled = !view.isControllerFullyVisible && view.findFocus() === view }
+            settled
+        }
         remote.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
         remote.runOnMainSync {
             assertFalse("playWhenReady=${view.player!!.playWhenReady} " +
@@ -250,14 +263,14 @@ class PlayerRemoteTest {
     }
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-    @Test fun episodeButtonsAdvanceAndRestartBeforePrevious() {
-        var next = 0
-        var previous = 0
+    @Test fun episodePlaylistEnablesNativeNextAndRestartBeforePrevious() {
+        val clip = PlaybackSource("asset:///big_buck_bunny_sample.mp4", "Episode")
+        var queue by mutableStateOf<EpisodeQueue?>(null)
+        var selectedId = "episode:2"
         compose.activity.runOnUiThread {
             compose.activity.setContent {
-                SamplePlayer(PlaybackSource("asset:///big_buck_bunny_sample.mp4", "Episode"),
-                    episode = true, onNextEpisode = { next++ },
-                    onPreviousEpisode = { previous++ }) {}
+                SamplePlayer(clip, episodeId = "episode:2", episodeQueue = queue,
+                    episode = true, onEpisodeChanged = { selectedId = it }) {}
             }
         }
         val remote = InstrumentationRegistry.getInstrumentation()
@@ -275,23 +288,48 @@ class PlayerRemoteTest {
             view.player!!.pause()
             view.player!!.seekTo(12_000)
             view.showController()
+            queue = EpisodeQueue("episode:2",
+                EpisodePlayback("episode:1", clip), EpisodePlayback("episode:3", clip))
         }
         compose.waitUntil(5_000) {
             var enabled = false
             remote.runOnMainSync {
-                enabled = view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_prev).isEnabled &&
+                enabled = view.player!!.hasNextMediaItem() && view.player!!.hasPreviousMediaItem() &&
                     view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next).isEnabled
             }
             enabled
         }
         remote.runOnMainSync {
+            val nextButton = view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next)
+            assertEquals("Next should use Media3's active appearance",
+                view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_play_pause).alpha,
+                nextButton.alpha, 0.01f)
             view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next).performClick()
+            assertEquals("episode:3", view.player!!.currentMediaItem?.mediaId)
+            assertEquals("episode:3", selectedId)
+        }
+        remote.runOnMainSync {
+            queue = EpisodeQueue("episode:3",
+                EpisodePlayback("episode:2", clip), EpisodePlayback("episode:4", clip))
+        }
+        compose.waitUntil(5_000) {
+            var ready = false
+            remote.runOnMainSync {
+                ready = view.player!!.hasNextMediaItem() &&
+                    view.player!!.getMediaItemAt(view.player!!.currentMediaItemIndex + 1).mediaId == "episode:4"
+            }
+            ready
+        }
+        remote.runOnMainSync {
+            view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_next).performClick()
+            assertEquals("episode:4", view.player!!.currentMediaItem?.mediaId)
+            view.player!!.pause()
+            view.player!!.seekTo(12_000)
             view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_prev).performClick()
-            assertEquals(1, next)
-            assertEquals(0, previous)
+            assertEquals("episode:4", view.player!!.currentMediaItem?.mediaId)
             assertTrue(view.player!!.currentPosition < 1_000)
             view.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_prev).performClick()
-            assertEquals(1, previous)
+            assertEquals("episode:3", view.player!!.currentMediaItem?.mediaId)
         }
     }
 }
